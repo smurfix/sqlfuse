@@ -1,0 +1,53 @@
+========
+sqlmount
+========
+
+This program mounts a file hierarchy, stored in a SQL database,
+onto a directory (via FUSE).
+
+The actual file contents are not stored in the database.
+That would be much too slow. Instead, they're stored in a
+separate file hierarchy, indexed by inode.
+
+If files are created or changed, this is recorded in the database.
+You can use another sqlmount process to use these change records
+to mirror files.
+
+---------
+Rationale
+---------
+
+For my own use, I want a file system with a bunch of properties
+not commonly found in "standard" file systems.
+
+I want a file system that's replicated across multiple systems,
+some of which are behind slow WAN links. Yet local access needs
+to be fast everywhere.
+
+I want a file system that's redundant and that can be reconfigured
+easily, so that I can add a subtree with my banking records and
+decide to have a few more copies stored someplace safe.
+
+I don't want local file caches. I don't need safe concurrent
+write accesses.
+
+I like to store file metadata in a database instead of modifying
+the original files. That's important for stuff like MP3 tracks.
+
+-----
+Ideas
+-----
+
+File access strategies can be modified. This enables you to e.g.
+store unmodified MP3 files via sqlmount, except that the ID3v2 metadata
+are pulled transparently from (a local mirror of) the MusicBrainz database.
+
+Files might be stored in archives. People who like P2P file sharing
+can thus keep the original file and still access the individual parts.
+
+----
+TODO
+----
+
+Indexing by content (file SHA1) should be possible.
+

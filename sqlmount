@@ -1,0 +1,685 @@
+#!/usr/bin/python -tt
+
+#    Copyright (C) 2010  Matthias Urlichs <matthias@urlichs.de>
+#
+#    This program may be distributed under the terms of the GNU GPLv3.
+#
+## This file is formatted with tabs.
+## Do NOT introduce leading spaces.
+
+import errno, fcntl, os, stat, sys, traceback
+from smurf import Db,Cf
+
+import fuse
+Fuse=fuse.Fuse
+
+if not hasattr(fuse, '__version__'):
+	raise RuntimeError, \
+		"Your fuse module doesn't have a __version__ attribute. It may be too old."
+
+fuse.fuse_python_api = (0, 2)
+
+fuse.feature_assert('stateful_files', 'has_init')
+
+import inspect
+def log_call():
+	c=inspect.currentframe(1)
+	print ">>>",c.f_code.co_name,"@",c.f_lineno,repr(c.f_locals)
+	
+def flag2mode(flags):
+	md = {os.O_RDONLY: 'r', os.O_WRONLY: 'w', os.O_RDWR: 'w+'}
+	m = md[flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR)]
+
+	if flags & os.O_APPEND:
+		m = m.replace('w', 'a', 1)
+
+	return m
+
+
+class SqlFile(object):
+	def __init__(self, tree, inode, flags):
+		log_call()
+		self.tree = tree
+		self.inode = inode
+		self.file = open(os.path.join(tree.store,str(inode)),"w+")
+		log_call()
+
+	def read(self, length,offset):
+		log_call()
+		self.file.seek(offset)
+		return self.file.read(length)
+
+	def write(self, buf,offset):
+		log_call()
+		self.file.seek(offset)
+		self.file.write(buf)
+		return len(buf)
+
+	def release(self, flags):
+		log_call()
+		self.file.close()
+
+	def _fflush(self):
+		log_call()
+		return -errno.EOPNOTSUPP
+		if 'w' in self.file.mode or 'a' in self.file.mode:
+			self.file.flush()
+
+	def fsync(self, isfsyncfile):
+		log_call()
+		return -errno.EOPNOTSUPP
+		self._fflush()
+		if isfsyncfile and hasattr(os, 'fdatasync'):
+			os.fdatasync(self.fd)
+		else:
+			os.fsync(self.fd)
+
+	def flush(self):
+		log_call()
+		return -errno.EOPNOTSUPP
+		self._fflush()
+		# cf. xmp_flush() in fusexmp_fh.c
+		os.close(os.dup(self.fd))
+
+	def fgetattr(self):
+		log_call()
+		return -errno.EOPNOTSUPP
+		return os.fstat(self.fd)
+
+	def ftruncate(self, len):
+		log_call()
+		return -errno.EOPNOTSUPP
+		self.file.truncate(len)
+
+	def lock(self, cmd, owner, **kw):
+		log_call()
+		return -errno.EOPNOTSUPP
+		# The code here is much rather just a demonstration of the locking
+		# API than something which actually was seen to be useful.
+
+		# Advisory file locking is pretty messy in Unix, and the Python
+		# interface to this doesn't make it better.
+		# We can't do fcntl(2)/F_GETLK from Python in a platfrom independent
+		# way. The following implementation *might* work under Linux. 
+		#
+		# if cmd == fcntl.F_GETLK:
+		#     import struct
+		# 
+		#     lockdata = struct.pack('hhQQi', kw['l_type'], os.SEEK_SET,
+		#                            kw['l_start'], kw['l_len'], kw['l_pid'])
+		#     ld2 = fcntl.fcntl(self.fd, fcntl.F_GETLK, lockdata)
+		#     flockfields = ('l_type', 'l_whence', 'l_start', 'l_len', 'l_pid')
+		#     uld2 = struct.unpack('hhQQi', ld2)
+		#     res = {}
+		#     for i in xrange(len(uld2)):
+		#          res[flockfields[i]] = uld2[i]
+		#  
+		#     return fuse.Flock(**res)
+
+		# Convert fcntl-ish lock parameters to Python's weird
+		# lockf(3)/flock(2) medley locking API...
+		op = { fcntl.F_UNLCK : fcntl.LOCK_UN,
+			   fcntl.F_RDLCK : fcntl.LOCK_SH,
+			   fcntl.F_WRLCK : fcntl.LOCK_EX }[kw['l_type']]
+		if cmd == fcntl.F_GETLK:
+			return -errno.EOPNOTSUPP
+		elif cmd == fcntl.F_SETLK:
+			if op != fcntl.LOCK_UN:
+				op |= fcntl.LOCK_NB
+		elif cmd == fcntl.F_SETLKW:
+			pass
+		else:
+			return -errno.EINVAL
+
+		fcntl.lockf(self.fd, op, kw['l_start'], kw['l_len'])
+
+class SqlDir(object):
+	def __init__(self, tree, inode):
+		log_call()
+		self.inode = inode
+		self.dirs = None
+
+	def readdir(self, *a,**k): # length, offset):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def releasedir(self, *a,**k): # flags):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def fsyncdir(self, *a,**k): # isfsyncfile):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+
+class StatObj(object):
+	def __init__(self,inode):
+		self.st_ino = inode
+		
+
+class SqlTree(Fuse):
+	node = Cf.get("SQL_NODE","default")
+	user = Cf.get("SQL_USER",os.environ['USER'])
+	password = Cf.get("SQL_PASS","")
+	host=Cf.get("SQL_HOST","localhost")
+	port=int(Cf.get("SQL_PORT",3306))
+	database=Cf.get("SQL_DB","sqlfuse")
+	dbtype=Cf.get("SQL_DBTYPE","mysql")
+
+	def __init__(self, *args, **kw):
+		super(SqlTree,self).__init__(*args, **kw)
+
+		# do stuff to set up your filesystem here, if you want
+		#import thread
+		#thread.start_new_thread(self.mythread, ())
+
+#    def mythread(self):
+#
+#        """
+#        The beauty of the FUSE python implementation is that with the python interp
+#        running in foreground, you can have threads
+#        """
+#        print "mythread: started"
+#        while 1:
+#            time.sleep(120)
+#            print "mythread: ticking"
+
+	def _file_path(self, inode):
+		return os.path.join(self.store, str(inode))
+	def _inode_path(self, path, tail=0):
+		if path[0] != '/':
+			return -errno.ENOENT
+		path = path.split('/')
+		while path:
+			name = path.pop()
+			if name != '':
+				break
+		if not tail:
+			path.append(name)
+		depth=0
+		q=[""]
+		qa = {"root":self.inode}
+		for p in path:
+			if p == '':
+				continue
+			depth += 1
+			q.append("JOIN tree AS t%d ON t%d.inode = t%d.parent and t%d.name=${t%d_name}" % (depth, depth-1, depth, depth, depth))
+			qa["t"+str(depth)+"_name"] = p
+		q[0]="SELECT t%d.inode from tree as t0" % (depth,)
+		q.append("where t0.inode=${root}")
+		ino, = self.db.DoFn(" ".join(q),**qa)
+		return ino,name
+		
+	def getattr(self, path):
+		log_call()
+		try:
+			ino,_ = self._inode_path(path)
+		except Db.NoData:
+			return -errno.ENOENT
+		res = StatObj(ino)
+		res.st_nlink,=self.db.DoFn("select count(*) from tree where inode=${ino}",ino=ino)
+		d = self.db.DoFn("select * from inode where id=${ino}", ino=ino, _dict=1)
+		for k,v in d.iteritems():
+			setattr(res,"st_"+k,v)
+		if stat.S_ISDIR(res.st_mode): 
+			res.st_nlink += 2
+		self.db.commit()
+		res.st_blocks = ((d['size']+4095)//4096)
+		res.st_blksize = ((d['size']+4095)//4096)
+		res.st_dev=0
+		res.st_rdev=0
+		#{'st_ctime': 0L, 'st_mtime': 0L, 'st_nlink': 3L, 'st_id': 1L, 'st_gid': 0L, 'st_event': None, 'st_size': 0L, 'st_ino': 1L, 'st_uid': 0L, 'st_mode': 16384L, 'st_atime': 0L}
+		print repr(res.__dict__)
+		return res
+
+	def readlink(self, path):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def opendir(self, path, *a,**k): # path, offset):
+		log_call()
+		return 0
+		try:
+			ino,_ = self._inode_path(path)
+		except Db.NoData:
+			return -errno.ENOENT
+		return SqlDir(tree=self, inode=ino)
+
+	def readdir(self, path, offset,*a,**k):
+		log_call()
+		try:
+			par,name = self._inode_path(path,tail=True)
+			ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
+		except Db.NoData:
+			return -errno.ENOENT
+		return self._readdir(ino,par,offset)
+
+	def _readdir(self,ino,par,offset):
+		if offset == 0:
+			offset += 1
+			d = fuse.Direntry(".")
+			d.ino=ino
+			print "RES",".",ino
+			yield d
+		if offset == 1:
+			offset += 1
+			d = fuse.Direntry("..")
+			d.ino=par
+			print "RES","..",par
+			yield d
+		for n,i,m in self.db.DoSelect("select tree.name,tree.inode,inode.mode from tree,inode where parent=${par} and inode.id=tree.inode and tree.name != '' order by tree.inode limit ${offset},999999999", par=ino,offset=offset-2, _empty=True,_store=True):
+		    	print "B"
+			offset += 1
+			d = fuse.Direntry(n)
+			d.ino=i
+			#d.type = stat.S_IFMT(m)
+			#d.offset=offset
+			print "RES",d.name,d.ino
+			yield d
+		    	print "C"
+
+	def releasedir(self, *a,**k): # path, offset):
+		log_call()
+		#return -errno.EOPNOTSUPP
+		#for e in os.listdir("." + path):
+		#	yield fuse.Direntry(e)
+
+	def unlink(self, path):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def rmdir(self, path):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def symlink(self, path, path1):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def rename(self, path, path1):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def link(self, path, path1):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def chmod(self, path, mode):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def chown(self, path, user, group):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def truncate(self, path, len):
+		log_call()
+		return -errno.EOPNOTSUPP
+		#f = open("." + path, "a")
+		#f.truncate(len)
+		#f.close()
+
+	def mknod(self, path, mode, dev):
+		log_call()
+		return -errno.EOPNOTSUPP
+		os.mknod("." + path, mode, dev)
+
+	def mkdir(self, path, mode):
+		log_call()
+		return -errno.EOPNOTSUPP
+		os.mkdir("." + path, mode)
+
+	def utime(self, path, times):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+#    The following utimens method would do the same as the above utime method.
+#    We can't make it better though as the Python stdlib doesn't know of
+#    subsecond preciseness in acces/modify times.
+#  
+	def utimens(self, path, ts_acc, ts_mod):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def bmap(self, *a,**k):
+		log_call()
+		return -errno.EOPNOTSUPP
+
+	def access(self, path, mode):
+		log_call()
+		return -errno.EOPNOTSUPP
+		#if not os.access("." + path, mode):
+		#	return -errno.EACCES
+
+#    This is how we could add stub extended attribute handlers...
+#    (We can't have ones which aptly delegate requests to the underlying fs
+#    because Python lacks a standard xattr interface.)
+#
+	def getxattr(self, path, name, size):
+		log_call()
+		return -errno.EOPNOTSUPP
+		val = name.swapcase() + '@' + path
+		if size == 0:
+			# We are asked for size of the value.
+			return len(val)
+		return val
+
+	def setxattr(self, path, name, value, size):
+		log_call()
+		return -errno.EOPNOTSUPP
+		# TODO
+		return
+
+	def listxattr(self, path, size):
+		log_call()
+		return -errno.EOPNOTSUPP
+		# We use the "user" namespace to please XFS utils
+		aa = ["user." + a for a in ("foo", "bar")]
+		if size == 0:
+			# We are asked for size of the attr list, ie. joint size of attrs
+			# plus null separators.
+			return len("".join(aa)) + len(aa)
+		return aa
+
+	def removexattr(self, path, name):
+		log_call()
+		return -errno.EOPNOTSUPP
+		# TODO
+		return
+
+	def statfs(self):
+		"""
+		Should return an object with statvfs attributes (f_bsize, f_frsize...).
+		Eg., the return value of os.statvfs() is such a thing (since py 2.2).
+		If you are not reusing an existing statvfs object, start with
+		fuse.StatVFS(), and define the attributes.
+
+		To provide usable information (ie., you want sensible df(1)
+		output, you are suggested to specify the following attributes:
+
+			- f_bsize - preferred size of file blocks, in bytes
+			- f_frsize - fundamental size of file blcoks, in bytes
+				[if you have no idea, use the same as blocksize]
+			- f_blocks - total number of blocks in the filesystem
+			- f_bfree - number of free blocks
+			- f_files - total number of file inodes
+			- f_ffree - nunber of free file inodes
+		"""
+		log_call()
+
+		return os.statvfs(".")
+
+	def new_SqlFile(self,path,flags,mode=None):
+		log_call()
+		if flags & os.O_CREAT:
+			par,name = self._inode_path(path,tail=True)
+			ino = None
+			try:
+				ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
+			except Db.NoData:
+				pass
+			else:
+				if flags & os.O_EXCL:
+					return -errno.EEXIST
+			if ino is None:
+				ino = self.db.Do("insert into inode (mode) values(${mode})", mode=mode)
+				self.db.Do("insert into tree (inode,parent,name) values(${ino},${par},${name})", ino=ino,par=par,name=name)
+		else:
+			ino,_ = self._inode_path(path)
+
+		res = SqlFile(tree=self, inode=ino, flags=flags)
+		self.db.commit()
+		return res
+
+	def open(self, path,flags):
+		log_call()
+		ino,_ = self._inode_path(path)
+		res = SqlFile(tree=self, inode=ino, flags=flags)
+		self.db.commit()
+		return res
+
+	def create(self, path,flags,mode):
+		log_call()
+		par,name = self._inode_path(path,tail=True)
+		ino = None
+		try:
+			ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
+		except Db.NoData:
+			ino = self.db.Do("insert into inode (mode) values(${mode})", mode=mode)
+			self.db.Do("insert into tree (inode,parent,name) values(${ino},${par},${name})", ino=ino,par=par,name=name)
+		else:
+			if flags & os.O_EXCL:
+				self.db.commit()
+				return -errno.EEXIST
+
+		res = SqlFile(tree=self, inode=ino, flags=flags)
+		self.db.commit()
+		return res
+
+	def read(self, *a,**k): #length, offset):
+		log_call()
+		return -errno.EOPNOTSUPP
+		self.file.seek(offset)
+		return self.file.read(length)
+
+	def write(self, path,off,buf, fsobj): #buf, offset):
+		log_call()
+		return fsobj.write(off,buf)
+
+	def release(self, *a,**k): #flags):
+		log_call()
+		return -errno.EOPNOTSUPP
+		self.file.close()
+
+	def _fflush(self):
+		log_call()
+		return -errno.EOPNOTSUPP
+		if 'w' in self.file.mode or 'a' in self.file.mode:
+			self.file.flush()
+
+	def fsync(self, *a,**k): #isfsyncfile):
+		log_call()
+		return -errno.EOPNOTSUPP
+		self._fflush()
+		if isfsyncfile and hasattr(os, 'fdatasync'):
+			os.fdatasync(self.fd)
+		else:
+			os.fsync(self.fd)
+
+	def flush(self, *a,**k):
+		log_call()
+		return -errno.EOPNOTSUPP
+		self._fflush()
+		# cf. xmp_flush() in fusexmp_fh.c
+		os.close(os.dup(self.fd))
+
+	def fgetattr(self, *a,**k):
+		log_call()
+		return -errno.EOPNOTSUPP
+		return os.fstat(self.fd)
+
+	def ftruncate(self, *a,**k):
+		log_call()
+		return -errno.EOPNOTSUPP
+		self.file.truncate(len)
+
+	def lock(self, *a,**k): #cmd, owner):
+		log_call()
+		return -errno.EOPNOTSUPP
+		# The code here is much rather just a demonstration of the locking
+		# API than something which actually was seen to be useful.
+
+		# Advisory file locking is pretty messy in Unix, and the Python
+		# interface to this doesn't make it better.
+		# We can't do fcntl(2)/F_GETLK from Python in a platfrom independent
+		# way. The following implementation *might* work under Linux. 
+		#
+		# if cmd == fcntl.F_GETLK:
+		#     import struct
+		# 
+		#     lockdata = struct.pack('hhQQi', kw['l_type'], os.SEEK_SET,
+		#                            kw['l_start'], kw['l_len'], kw['l_pid'])
+		#     ld2 = fcntl.fcntl(self.fd, fcntl.F_GETLK, lockdata)
+		#     flockfields = ('l_type', 'l_whence', 'l_start', 'l_len', 'l_pid')
+		#     uld2 = struct.unpack('hhQQi', ld2)
+		#     res = {}
+		#     for i in xrange(len(uld2)):
+		#          res[flockfields[i]] = uld2[i]
+		#  
+		#     return fuse.Flock(**res)
+
+		# Convert fcntl-ish lock parameters to Python's weird
+		# lockf(3)/flock(2) medley locking API...
+		op = { fcntl.F_UNLCK : fcntl.LOCK_UN,
+			   fcntl.F_RDLCK : fcntl.LOCK_SH,
+			   fcntl.F_WRLCK : fcntl.LOCK_EX }[kw['l_type']]
+		if cmd == fcntl.F_GETLK:
+			return -errno.EOPNOTSUPP
+		elif cmd == fcntl.F_SETLK:
+			if op != fcntl.LOCK_UN:
+				op |= fcntl.LOCK_NB
+		elif cmd == fcntl.F_SETLKW:
+			pass
+		else:
+			return -errno.EINVAL
+
+		fcntl.lockf(self.fd, op, kw['l_start'], kw['l_len'])
+
+	def fsinit(self):
+		log_call()
+		# TODO: setup a copying thread
+		self.node_id,self.inode,self.store = self.db.DoFn("select id,inode,files from node where name=${name}", name=self.node)
+		pass
+
+	def fsdestroy(self):
+		log_call()
+		pass
+
+
+	def new_SqlDir(self,path):
+		log_call()
+		try:
+			ino,_ = self._inode_path(path)
+		except Db.NoData:
+			return -errno.ENOENT
+		res = SqlDir(tree=self, inode=ino)
+		self.db.commit()
+		return res
+
+	def main(self, *a, **kw):
+		#self.file_class = self.new_SqlFile
+		#self.dir_class = self.new_SqlDir
+
+		return Fuse.main(self, *a, **kw)
+
+def opts(server,p=None,usage=None):
+	if p:
+		def opt(name,**k):
+			p.add_option(mountopt=name, **k)
+		def rv():
+			return None
+	else:
+		import optparse
+		if p is False:
+			def rv():
+				return p.print_help()
+		else:
+			def rv():
+				return p.parse_args(sys.argv[2:])
+		p = optparse.OptionParser(usage=usage)
+		def opt(name,**k):
+			p.add_option("--"+name, **k)
+
+	opt("node", dest="node", default="node",
+		help="file storage node name [default: %default]")
+	opt("user", dest="username", default=server.user,
+		help="SQL user name [default: %default]")
+	opt("password", dest="password", default=server.password,
+		help="SQL password [default: %default]")
+	opt("host", dest="host", default=server.host,
+		help="SQL database host [default: %default]")
+	opt("port", dest="port", default=server.port, type="int",
+		help="SQL database name [default: %default]")
+	opt("database", dest="database", default=server.database,
+		help="SQL database name [default: %default]")
+	opt("dbtype", dest="dbtype", default=server.dbtype,
+		help="SQL database type [default: %default]")
+
+	return rv()
+
+def main():
+	if sys.argv[1] == "help":
+		usage = """
+sqlmount /mountpoint [options ...]
+	Mount an SQL-based file system.
+sqlmount --help
+	Print usage information for mounting.
+
+sqlmount help
+	Print usage information for non-mounting modes.
+
+*sqlmount info [--node=NAME] [path...]
+	List generic information for this SQL node.
+	If paths are specified, list the detailed state for that file/dir.
+
+*sqlmount list nodes
+	List which nodes are known.
+*sqlmount list node NAME
+	List details from the named node.
+*sqlmount add node NAME path STORAGE
+	Create a new directory hierarchy for storing in STORAGE.
+*sqlmount change node NAME [new NAME] [path STORAGE]
+	Change this directory hierarchy for storing in STORAGE.
+	You need to copy files from the old to the new storage
+	before running this command!
+*sqlmount clone node NAME new NAME path STORAGE
+	Create a copy of an existing directory hierarchy.
+	You'll also need to specify where to copy files from; see below.
+*sqlmount del node NAME
+	Delete this node.
+
+*sqlmount list copy
+	List all copying commands.
+*sqlmount list copy A B
+	List details of the copy command which copies stuff from node A to B.
+*sqlmount add copy A B prio N mode HOW via CMD [ondemand|background]
+*sqlmount change copy A B [prio N] [mode HOW [via CMD]] [ondemand|background]
+	Add or change a command to copy stuff from A to B.
+	If 'ondemand' is specified, this is a caching method.
+	Otherwise, copying of all files will run in the background.
+*sqlmount del copy A B
+	Delete this method to copy files.
+
+* These commands are not implemented yet.
+"""
+		p=opts(SqlTree,False,usage)
+		sys.exit(0)
+	else:
+		usage = """
+sqlmount: mount a file hierarchy from a SQL database.
+
+sqlmount help  -- list other options
+
+""" + Fuse.fusage
+
+		server = SqlTree(version="%prog " + fuse.__version__,
+				 usage=usage,
+				 dash_s_do='setsingle')
+
+		opts(server, server.parser)
+		# multithread the thing.
+		server.multithreaded = True
+
+		server.parse(values=server, errex=1)
+
+		if server.fuse_args.mount_expected():
+			server.db = Db.Db(dbtye=server.dbtype,host=server.host,port=server.port,database=server.database,username=server.username,password=server.password)
+	
+			mode,=server.db.DoFn("select mode from inode where id=1")
+			if mode == 0:
+				server.db.Do("update inode set mode=${dir} where id=1", dir=stat.S_IFDIR)
+				server.db.commit()
+		server.main()
+
+if __name__ == '__main__':
+	main()

@@ -1,0 +1,134 @@
+-- MySQL dump 10.10
+--
+-- Host: localhost    Database: mysqlfs
+-- ------------------------------------------------------
+-- Server version	5.0.22-Debian_0ubuntu6.06.2
+
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!40101 SET NAMES utf8 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+
+--
+-- An inode is the primary identifier for a file or directory.
+-- Note that there is no refcount.
+DROP TABLE IF EXISTS `inode`;
+CREATE TABLE `inode` (
+  `id` bigint(20) unsigned NOT NULL auto_increment,
+  `mode` int(11) NOT NULL default '0',
+  `uid` int(10) unsigned NOT NULL default '0',
+  `gid` int(10) unsigned NOT NULL default '0',
+  `atime` int(10) unsigned NOT NULL default '0',
+  `mtime` int(10) unsigned NOT NULL default '0',
+  `ctime` int(10) unsigned NOT NULL default '0',
+  `atime_ns` int(10) unsigned NOT NULL default '0',
+  `mtime_ns` int(10) unsigned NOT NULL default '0',
+  `ctime_ns` int(10) unsigned NOT NULL default '0',
+  `size` bigint(20) NOT NULL default '0', -- mirrors file size
+  `event` bigint(20) unsigned NULL, -- ID of file's latest event record
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `event` (`event`)
+) DEFAULT CHARSET=binary;
+insert into `inode` (`id`,`mode`) values (1,0); -- S_IFDIR, set when first mounting
+
+--
+-- This represents directory entries.
+-- 
+DROP TABLE IF EXISTS `tree`;
+CREATE TABLE `tree` (
+  `inode` bigint(20) unsigned NOT NULL,
+  `parent` bigint(20) unsigned NULL default NULL,
+  `name` varchar(255) NOT NULL,
+  KEY `inode` (`inode`),
+  UNIQUE KEY `name` (`parent`,`name`),
+  constraint `fk_tree_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade
+) DEFAULT CHARSET=utf8;
+alter table `tree` add constraint `fk_tree_parent` foreign key(`parent`) references `tree`(`inode`);
+insert into `tree` (`inode`,`parent`,`name`) values (1,1,"");
+alter table `tree` change `parent` `parent` bigint(20) unsigned NOT NULL;
+
+-- 
+-- Multiple instances can have disparate directory views.
+-- 
+DROP TABLE IF EXISTS `node`;
+CREATE TABLE `node` (
+  `id` int(10) unsigned NOT NULL auto_increment,
+  `inode` bigint(20) unsigned NOT NULL, -- my root
+  `name` varchar(255) NOT NULL,
+  `files` varchar(1024) NOT NULL, -- local file system path
+  `event` bigint(20) unsigned NOT NULL default 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `name` (`name`),
+  constraint `fk_node_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade
+) DEFAULT CHARSET=utf8;
+insert into `node`(`id`,`inode`,`name`,`files`) values(1,1,'default','/tmp/sqlmount');
+
+-- 
+-- Remember file updates (and deletes). We need this to copy files.
+-- 
+DROP TABLE IF EXISTS `event`;
+CREATE TABLE `event` (
+  `id` bigint(20) unsigned NOT NULL auto_increment,
+  `inode` bigint(20) unsigned NOT NULL,
+  `node` int(10) unsigned NOT NULL,
+  `typ` char(1) NOT NULL, -- 'n'ew 'c'hange 'd'elete 's'ync 'i'nit
+  PRIMARY KEY (`id`),
+  constraint `fk_event_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade,
+  constraint `fk_event_node` foreign key(`node`) references `node`(`id`) on delete cascade
+) DEFAULT CHARSET=utf8;
+alter table `inode` add constraint `fk_inode_event` foreign key(`event`) references `event`(`id`) on delete restrict;
+
+insert into `event` (`id`,`inode`,`node`,`typ`) values (1,1,1,'i');
+alter table `node` add constraint `fk_node_event` foreign key(`event`) references `event`(`id`) on delete restrict;
+
+-- 
+-- This table tracks whether updates have arrived on this node.
+-- 
+DROP TABLE IF EXISTS `state`;
+CREATE TABLE `state` (
+  `id` bigint(20) unsigned NOT NULL auto_increment,
+  `node` int(10) unsigned NOT NULL,
+  `inode` bigint(20) unsigned NOT NULL,
+  `event` bigint(20) UNSIGNED NULL,
+  PRIMARY KEY (`id`),
+  KEY(`event`),
+  constraint `fk_state_node` foreign key(`node`) references `node`(`id`) on delete cascade,
+  constraint `fk_state_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade,
+  constraint `fk_state_event` foreign key(`event`) references `event`(`id`) on delete restrict
+) DEFAULT CHARSET=utf8;
+
+
+-- 
+-- Remember which updates have been carried out
+-- 
+DROP TABLE IF EXISTS `updater`;
+CREATE TABLE `updater` (
+  `id` int(10) unsigned NOT NULL,
+  `src` int(10) unsigned NOT NULL, -- the node I'm copying from
+  `dst` int(10) unsigned NOT NULL, -- my ID
+  `distance` tinyint(2) unsigned NOT NULL, -- how expensive is copying?
+  `method` varchar(10) not null,
+  `source` varchar(1024) not null,
+  `event` bigint(20) unsigned NULL, -- if NULL, no auto-copy will happen
+  PRIMARY KEY (`id`),
+  constraint `fk_updater_src` foreign key(`src`) references `node`(`id`) on delete cascade,
+  constraint `fk_updater_dst` foreign key(`dst`) references `node`(`id`) on delete cascade,
+  constraint `fk_updater_event` foreign key(`event`) references `event`(`id`) on delete restrict
+) DEFAULT CHARSET=utf8;
+
+
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
