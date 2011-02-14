@@ -1,4 +1,5 @@
 #!/usr/bin/python -tt
+# -*- coding: utf-8 -*-
 
 #    Copyright (C) 2010  Matthias Urlichs <matthias@urlichs.de>
 #
@@ -7,67 +8,167 @@
 ## This file is formatted with tabs.
 ## Do NOT introduce leading spaces.
 
+from __future__ import division, print_function, absolute_import
+
 import errno, fcntl, os, stat, sys, traceback
 from smurf import Db,Cf
 
-import fuse
-Fuse=fuse.Fuse
-
-if not hasattr(fuse, '__version__'):
-	raise RuntimeError, \
-		"Your fuse module doesn't have a __version__ attribute. It may be too old."
-
-fuse.fuse_python_api = (0, 2)
-
-fuse.feature_assert('stateful_files', 'has_init')
-
+import llfuse
+from llfuse import FUSEError
 import inspect
+import traceback
+from threading import Lock,Thread,Condition
+from time import sleep
+
+import datetime
+utcnow = datetime.datetime.utcnow
+
+# map fdnum ⇒ filehandle
+_slot = {}
+_slot_next = 1
+def new_slot(x):
+	global _slot_next
+	_slot_next += 1
+	while _slot_next in _slot:
+		if _slot_next == 999999999:
+			_slot_next = 1
+		else:
+			_slot_next += 1
+	_slot[_slot_next] = x
+	return _slot_next
+def old_slot(x):
+	return _slot[x]
+def del_slot(x):
+	res = _slot[x]
+	del _slot[x]
+	return res
+
+# busy-inode flag
+_busy = {}
+def set_busy(i):
+	if i in _busy:
+		_busy[i] += 1
+	else:
+		_busy[i] = 1
+def is_busy(i):
+	return (i in _busy)
+def clr_busy(i):
+	#return True if it's to be deleted
+	b = _busy[i]
+	if b < 0:
+		b += 1
+		if b == 0:
+			del _busy[i]
+			return True
+	else:
+		b -= 1
+		if b == 0:
+			del _busy[i]
+	return False
+def defer_delete(i):
+	if i not in _busy:
+		return False
+	if _busy[i] > 0:
+		_busy[i] = -_busy[i]
+	return True
+def no_defer_delete(i):
+	if i not in _busy:
+		return
+	if _busy[i] < 0:
+		_busy[i] = -_busy[i]
+
 def log_call():
 	c=inspect.currentframe(1)
-	print ">>>",c.f_code.co_name,"@",c.f_lineno,repr(c.f_locals)
+	print(">>>",c.f_code.co_name,"@",c.f_lineno,repr(c.f_locals))
 	
 def flag2mode(flags):
-	md = {os.O_RDONLY: 'r', os.O_WRONLY: 'w', os.O_RDWR: 'w+'}
-	m = md[flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR)]
-
 	if flags & os.O_APPEND:
-		m = m.replace('w', 'a', 1)
+		mode = "a"
+	else:
+		mode = "w"
+	f = (flags & (os.O_WRONLY|os.O_RDONLY|os.O_RDWR))
+	if f == os.O_RDONLY:
+		mode = "r"
+	elif f == os.O_RDWR:
+		mode += "+"
 
-	return m
+	return mode
 
+class BackgroundUpdater(Thread):
+	def __init__(self,tree):
+		super(BackgroundUpdater,self).__init__()
+		self.tree = tree
+		self.lock = Condition()
+		self.state = False
 
-class SqlFile(object):
+	def run(self):
+		while True:
+			self.lock.acquire()
+			while self.state is False:
+				self.lock.wait()
+			if self.state is None:
+				self.lock.release()
+				return
+			self.state is False
+			self.lock.release()
+
+			vals = _slot.values()
+			for val in vals:
+				if val.mtime is not None:
+					val.update_bg()
+			sleep(0.5)
+				
+
+class FileOperations(object):
+	mtime = None
 	def __init__(self, tree, inode, flags):
 		log_call()
 		self.tree = tree
 		self.inode = inode
-		self.file = open(os.path.join(tree.store,str(inode)),"w+")
-		log_call()
+		self.lock = Lock()
+		mode = flag2mode(flags)
+		self.mode = mode[0]
+		self.size, = tree.db.DoFn("select size from inode where id=${inode}",inode=inode)
+		self.file = open(os.path.join(tree.store,str(inode)),mode)
+
+	def update_bg(self):
+		mt = self.mtime
+		self.mtime = None
+		self.tree.db.Do("update inode set mtime=${mtime},size=${size} where id=${inode}", inode=self.inode, mtime=mt.strftime("%s"), size=self.size )
+		self.tree.db.commit()
 
 	def read(self, length,offset):
 		log_call()
-		self.file.seek(offset)
-		return self.file.read(length)
+		with self.lock:
+			self.file.seek(offset)
+			return self.file.read(length)
 
 	def write(self, buf,offset):
 		log_call()
-		self.file.seek(offset)
-		self.file.write(buf)
-		return len(buf)
+		with self.lock:
+			self.file.seek(offset)
+			self.file.write(buf)
+			
+			end = offset+len(buf)
+			if self.size < end:
+				self.size = end
+			self.mtime = utcnow()
+			self.tree.trigger_bg()
+			return len(buf)
 
-	def release(self, flags):
+	def release(self):
 		log_call()
+		if val.mtime is not None:
+			val.update_bg()
 		self.file.close()
 
 	def _fflush(self):
 		log_call()
-		return -errno.EOPNOTSUPP
-		if 'w' in self.file.mode or 'a' in self.file.mode:
-			self.file.flush()
+		self.file.flush()
 
 	def fsync(self, isfsyncfile):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		self._fflush()
 		if isfsyncfile and hasattr(os, 'fdatasync'):
 			os.fdatasync(self.fd)
@@ -76,24 +177,21 @@ class SqlFile(object):
 
 	def flush(self):
 		log_call()
-		return -errno.EOPNOTSUPP
 		self._fflush()
-		# cf. xmp_flush() in fusexmp_fh.c
-		os.close(os.dup(self.fd))
 
 	def fgetattr(self):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		return os.fstat(self.fd)
 
 	def ftruncate(self, len):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		self.file.truncate(len)
 
 	def lock(self, cmd, owner, **kw):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		# The code here is much rather just a demonstration of the locking
 		# API than something which actually was seen to be useful.
 
@@ -122,42 +220,48 @@ class SqlFile(object):
 			   fcntl.F_RDLCK : fcntl.LOCK_SH,
 			   fcntl.F_WRLCK : fcntl.LOCK_EX }[kw['l_type']]
 		if cmd == fcntl.F_GETLK:
-			return -errno.EOPNOTSUPP
+			raise FUSEError(errno.EOPNOTSUPP)
 		elif cmd == fcntl.F_SETLK:
 			if op != fcntl.LOCK_UN:
 				op |= fcntl.LOCK_NB
 		elif cmd == fcntl.F_SETLKW:
 			pass
 		else:
-			return -errno.EINVAL
+			raise FUSEError(errno.EINVAL)
 
 		fcntl.lockf(self.fd, op, kw['l_start'], kw['l_len'])
 
-class SqlDir(object):
+class DirOperations(object):
+	mtime = None
 	def __init__(self, tree, inode):
 		log_call()
 		self.inode = inode
-		self.dirs = None
+		self.tree = tree
 
-	def readdir(self, *a,**k): # length, offset):
+	def read(self, offset):
+		# We use the actual inode as offset
 		log_call()
-		return -errno.EOPNOTSUPP
+		if offset == 0:
+			yield (".", self.tree.getattr(self.inode), 0)
+			offset = 1
+		if offset == 1:
+			par, = self.tree.db.DoFn("select parent from tree where inode=${inode}", inode=self.inode)
+			yield ("..", self.tree.getattr(self.inode), 0)
+			offset = 2
 
-	def releasedir(self, *a,**k): # flags):
+		for n,i in self.tree.db.DoSelect("select name,inode from tree where parent=${par} and name != '' and inode > ${offset}", par=self.inode,offset=offset-2, _empty=True,_store=True):
+			yield (n, self.tree.getattr(i), i+2)
+
+	def release(self):
 		log_call()
-		return -errno.EOPNOTSUPP
+		return
 
-	def fsyncdir(self, *a,**k): # isfsyncfile):
+	def fsync(self):
 		log_call()
-		return -errno.EOPNOTSUPP
+		return
 
 
-class StatObj(object):
-	def __init__(self,inode):
-		self.st_ino = inode
-		
-
-class SqlTree(Fuse):
+class SqlFuse(llfuse.Operations):
 	node = Cf.get("SQL_NODE","default")
 	user = Cf.get("SQL_USER",os.environ['USER'])
 	password = Cf.get("SQL_PASS","")
@@ -166,29 +270,12 @@ class SqlTree(Fuse):
 	database=Cf.get("SQL_DB","sqlfuse")
 	dbtype=Cf.get("SQL_DBTYPE","mysql")
 
-	def __init__(self, *args, **kw):
-		super(SqlTree,self).__init__(*args, **kw)
-
-		# do stuff to set up your filesystem here, if you want
-		#import thread
-		#thread.start_new_thread(self.mythread, ())
-
-#    def mythread(self):
-#
-#        """
-#        The beauty of the FUSE python implementation is that with the python interp
-#        running in foreground, you can have threads
-#        """
-#        print "mythread: started"
-#        while 1:
-#            time.sleep(120)
-#            print "mythread: ticking"
-
 	def _file_path(self, inode):
 		return os.path.join(self.store, str(inode))
+
 	def _inode_path(self, path, tail=0):
 		if path[0] != '/':
-			return -errno.ENOENT
+			raise FUSEError(errno.ENOENT)
 		path = path.split('/')
 		while path:
 			name = path.pop()
@@ -209,129 +296,144 @@ class SqlTree(Fuse):
 		q.append("where t0.inode=${root}")
 		ino, = self.db.DoFn(" ".join(q),**qa)
 		return ino,name
-		
-	def getattr(self, path):
+
+	def lookup(self, inode_p, name):
+		if name == '.':
+			inode = inode_p
+		elif name == '..':
+			inode, = self.db.DoFn("select parent from tree where inode=${inode}",inode=inode_p)
+		else:
+			try:
+				inode, = self.db.DoFn("select inode from tree where parent=${inode} and name=${name}", inode=inode_p, name=name)
+			except Db.NoData:
+				raise(llfuse.FUSEError(errno.ENOENT))
+	    
+		return self.getattr(inode)
+
+	def handle_exc(self,fn,exc):
 		log_call()
-		try:
-			ino,_ = self._inode_path(path)
-		except Db.NoData:
-			return -errno.ENOENT
-		res = StatObj(ino)
-		res.st_nlink,=self.db.DoFn("select count(*) from tree where inode=${ino}",ino=ino)
-		d = self.db.DoFn("select * from inode where id=${ino}", ino=ino, _dict=1)
+		traceback.print_exc()
+
+	def getattr(self, inode):
+		log_call()
+		res = llfuse.EntryAttributes()
+		res.st_ino = inode
+		res.st_nlink, = self.db.DoFn("select count(*) from tree where inode=${inode}",inode=inode)
+		d = self.db.DoFn("select * from inode where id=${inode}", inode=inode, _dict=1)
 		for k,v in d.iteritems():
 			setattr(res,"st_"+k,v)
 		if stat.S_ISDIR(res.st_mode): 
 			res.st_nlink += 2
-		self.db.commit()
 		res.st_blocks = ((d['size']+4095)//4096)
-		res.st_blksize = ((d['size']+4095)//4096)
+		res.st_blksize = 4096
 		res.st_dev=0
 		res.st_rdev=0
-		#{'st_ctime': 0L, 'st_mtime': 0L, 'st_nlink': 3L, 'st_id': 1L, 'st_gid': 0L, 'st_event': None, 'st_size': 0L, 'st_ino': 1L, 'st_uid': 0L, 'st_mode': 16384L, 'st_atime': 0L}
-		print repr(res.__dict__)
+		res.generation = 1;
+		res.attr_timeout = 10;
+		res.entry_timeout = 10;
+		print(repr(res.__dict__))
+		self.db.commit()
 		return res
 
-	def readlink(self, path):
+	def setattr(self, inode, attr):
 		log_call()
-		return -errno.EOPNOTSUPP
+		a=[]
+		b={}
+		for f in ("size uid gid atime mtime".split()):
+			v = getattr(attr,"st_"+f)
+			if v is not None:
+				a.append(f)
+				b[f]=attr.st_size
+		if a:
+			a.append("ctime")
+			b["ctime"] = utcnow().strftime("%s")
 
-	def opendir(self, path, *a,**k): # path, offset):
+			self.db.Do("update inode set "+(", ".join(("%s=${%s}"%(x,x) for x in a)))+" where id=${inode}", inode=inode,**b)
+		return self.getattr(inode)
+
+	def readlink(self, inode):
 		log_call()
-		return 0
-		try:
-			ino,_ = self._inode_path(path)
-		except Db.NoData:
-			return -errno.ENOENT
-		return SqlDir(tree=self, inode=ino)
+		raise FUSEError(errno.EOPNOTSUPP)
 
-	def readdir(self, path, offset,*a,**k):
+	def opendir(self, inode):
+		return new_slot(DirOperations(tree=self, inode=inode))
+
+	def readdir(self, fh, offset):
 		log_call()
-		try:
-			par,name = self._inode_path(path,tail=True)
-			ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
-		except Db.NoData:
-			return -errno.ENOENT
-		return self._readdir(ino,par,offset)
-
-	def _readdir(self,ino,par,offset):
-		if offset == 0:
-			offset += 1
-			d = fuse.Direntry(".")
-			d.ino=ino
-			print "RES",".",ino
-			yield d
-		if offset == 1:
-			offset += 1
-			d = fuse.Direntry("..")
-			d.ino=par
-			print "RES","..",par
-			yield d
-		for n,i,m in self.db.DoSelect("select tree.name,tree.inode,inode.mode from tree,inode where parent=${par} and inode.id=tree.inode and tree.name != '' order by tree.inode limit ${offset},999999999", par=ino,offset=offset-2, _empty=True,_store=True):
-		    	print "B"
-			offset += 1
-			d = fuse.Direntry(n)
-			d.ino=i
-			#d.type = stat.S_IFMT(m)
-			#d.offset=offset
-			print "RES",d.name,d.ino
-			yield d
-		    	print "C"
-
-	def releasedir(self, *a,**k): # path, offset):
+		return old_slot(fh).read(offset)
+		
+	def fsyncdir(self, fh):
 		log_call()
-		#return -errno.EOPNOTSUPP
-		#for e in os.listdir("." + path):
-		#	yield fuse.Direntry(e)
+		return old_slot(fh).fsync()
 
-	def unlink(self, path):
+	def releasedir(self, fh):
 		log_call()
-		return -errno.EOPNOTSUPP
+		return del_slot(fh).release()
+
+	def unlink(self, inode_p, name):
+		log_call()
+		inode = self.lookup(inode_p,name)
+		mode, = self.db.DoFn("select mode from inode where id=${inode}", inode=inode)
+		if stat.S_ISDIR(mode):
+			raise FUSEError(errno.EISDIR)
+		if not defer_delete(inode):
+			self._remove(inode)
 
 	def rmdir(self, path):
 		log_call()
-		return -errno.EOPNOTSUPP
+		inode = self.lookup(inode_p,name)
+		mode, = self.db.DoFn("select mode from inode where id=${inode}", inode=inode)
+		if not stat.S_ISDIR(mode):
+			raise FUSEError(errno.ENOTDIR)
+		cnt, = self.db.DoFn("select count(*) from tree where parent=${inode}")
+		if cnt:
+			raise FUSEError(errno.ENOTEMPTY)
+		return self._remove(inode)
+
+	def _remove(self,inode):
+		log_call()
+		unlink(self._inode_path(inode))
+		self.db.Do("delete from tree where inode=${inode}")
+		self.db.Do("delete from inode where id=${inode}")
 
 	def symlink(self, path, path1):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 
 	def rename(self, path, path1):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 
 	def link(self, path, path1):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 
 	def chmod(self, path, mode):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 
 	def chown(self, path, user, group):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 
 	def truncate(self, path, len):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		#f = open("." + path, "a")
 		#f.truncate(len)
 		#f.close()
 
-	def mknod(self, path, mode, dev):
+	def mknod(self, parent, name, mode, rdev, ctx):
 		log_call()
-		return -errno.EOPNOTSUPP
-		os.mknod("." + path, mode, dev)
+		raise FUSEError(errno.EOPNOTSUPP)
 
-	def mkdir(self, path, mode):
+	def mkdir(self, parent, name, mode, rdev, ctx):
 		log_call()
-		return -errno.EOPNOTSUPP
-		os.mkdir("." + path, mode)
+		raise FUSEError(errno.EOPNOTSUPP)
 
 	def utime(self, path, times):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 
 #    The following utimens method would do the same as the above utime method.
 #    We can't make it better though as the Python stdlib doesn't know of
@@ -339,40 +441,40 @@ class SqlTree(Fuse):
 #  
 	def utimens(self, path, ts_acc, ts_mod):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 
 	def bmap(self, *a,**k):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 
 	def access(self, path, mode):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		#if not os.access("." + path, mode):
-		#	return -errno.EACCES
+		#	raise FUSEError(errno.EACCES)
 
 #    This is how we could add stub extended attribute handlers...
 #    (We can't have ones which aptly delegate requests to the underlying fs
 #    because Python lacks a standard xattr interface.)
 #
-	def getxattr(self, path, name, size):
+	def getxattr(self, inode, name):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		val = name.swapcase() + '@' + path
 		if size == 0:
 			# We are asked for size of the value.
 			return len(val)
 		return val
 
-	def setxattr(self, path, name, value, size):
+	def setxattr(self, inode, name, value):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		# TODO
 		return
 
-	def listxattr(self, path, size):
+	def listxattr(self, inode):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		# We use the "user" namespace to please XFS utils
 		aa = ["user." + a for a in ("foo", "bar")]
 		if size == 0:
@@ -381,9 +483,9 @@ class SqlTree(Fuse):
 			return len("".join(aa)) + len(aa)
 		return aa
 
-	def removexattr(self, path, name):
+	def removexattr(self, inode, name):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		# TODO
 		return
 
@@ -409,103 +511,76 @@ class SqlTree(Fuse):
 
 		return os.statvfs(".")
 
-	def new_SqlFile(self,path,flags,mode=None):
+	def open(self, inode,flags):
 		log_call()
-		if flags & os.O_CREAT:
-			par,name = self._inode_path(path,tail=True)
-			ino = None
-			try:
-				ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
-			except Db.NoData:
-				pass
-			else:
-				if flags & os.O_EXCL:
-					return -errno.EEXIST
-			if ino is None:
-				ino = self.db.Do("insert into inode (mode) values(${mode})", mode=mode)
-				self.db.Do("insert into tree (inode,parent,name) values(${ino},${par},${name})", ino=ino,par=par,name=name)
-		else:
-			ino,_ = self._inode_path(path)
-
-		res = SqlFile(tree=self, inode=ino, flags=flags)
+		res = FileOperations(tree=self, inode=inode, flags=flags)
 		self.db.commit()
-		return res
+		return new_slot(res)
 
-	def open(self, path,flags):
+	def create(self, par,name,mode,ctx):
 		log_call()
-		ino,_ = self._inode_path(path)
-		res = SqlFile(tree=self, inode=ino, flags=flags)
-		self.db.commit()
-		return res
-
-	def create(self, path,flags,mode):
-		log_call()
-		par,name = self._inode_path(path,tail=True)
 		ino = None
 		try:
 			ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
 		except Db.NoData:
-			ino = self.db.Do("insert into inode (mode) values(${mode})", mode=mode)
+			ino = self.db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime) values(${mode},${uid},${gid},${now},${now},${now})", mode=mode|stat.S_IFREG, uid=ctx.uid,gid=ctx.gid, now=now().strftime("%s"))
 			self.db.Do("insert into tree (inode,parent,name) values(${ino},${par},${name})", ino=ino,par=par,name=name)
 		else:
 			if flags & os.O_EXCL:
 				self.db.commit()
-				return -errno.EEXIST
+				raise FUSEError(errno.EEXIST)
 
-		res = SqlFile(tree=self, inode=ino, flags=flags)
-		self.db.commit()
+		res = FileOperations(tree=self, inode=ino, flags=os.O_RDWR|os.O_CREAT)
+		return (new_slot(res),self.getattr(ino))
+
+	def read(self, fh,off,size):
+		log_call()
+		res = old_slot(fh).read(size,off)
+		log_call()
 		return res
 
-	def read(self, *a,**k): #length, offset):
+	def write(self, fh,off,buf):
 		log_call()
-		return -errno.EOPNOTSUPP
-		self.file.seek(offset)
-		return self.file.read(length)
+		res = old_slot(fh).write(buf,off)
+		log_call()
+		return res
 
-	def write(self, path,off,buf, fsobj): #buf, offset):
+	def release(self, fh):
 		log_call()
-		return fsobj.write(off,buf)
-
-	def release(self, *a,**k): #flags):
-		log_call()
-		return -errno.EOPNOTSUPP
-		self.file.close()
+		return del_slot(fh).release()
 
 	def _fflush(self):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		if 'w' in self.file.mode or 'a' in self.file.mode:
 			self.file.flush()
 
 	def fsync(self, *a,**k): #isfsyncfile):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		self._fflush()
 		if isfsyncfile and hasattr(os, 'fdatasync'):
 			os.fdatasync(self.fd)
 		else:
 			os.fsync(self.fd)
 
-	def flush(self, *a,**k):
+	def flush(self, fh):
 		log_call()
-		return -errno.EOPNOTSUPP
-		self._fflush()
-		# cf. xmp_flush() in fusexmp_fh.c
-		os.close(os.dup(self.fd))
+		old_slot(fh).flush()
 
 	def fgetattr(self, *a,**k):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		return os.fstat(self.fd)
 
 	def ftruncate(self, *a,**k):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		self.file.truncate(len)
 
 	def lock(self, *a,**k): #cmd, owner):
 		log_call()
-		return -errno.EOPNOTSUPP
+		raise FUSEError(errno.EOPNOTSUPP)
 		# The code here is much rather just a demonstration of the locking
 		# API than something which actually was seen to be useful.
 
@@ -534,61 +609,72 @@ class SqlTree(Fuse):
 			   fcntl.F_RDLCK : fcntl.LOCK_SH,
 			   fcntl.F_WRLCK : fcntl.LOCK_EX }[kw['l_type']]
 		if cmd == fcntl.F_GETLK:
-			return -errno.EOPNOTSUPP
+			raise FUSEError(errno.EOPNOTSUPP)
 		elif cmd == fcntl.F_SETLK:
 			if op != fcntl.LOCK_UN:
 				op |= fcntl.LOCK_NB
 		elif cmd == fcntl.F_SETLKW:
 			pass
 		else:
-			return -errno.EINVAL
+			raise FUSEError(errno.EINVAL)
 
 		fcntl.lockf(self.fd, op, kw['l_start'], kw['l_len'])
 
-	def fsinit(self):
+	def init_db(self,db,node):
 		log_call()
 		# TODO: setup a copying thread
-		self.node_id,self.inode,self.store = self.db.DoFn("select id,inode,files from node where name=${name}", name=self.node)
-		pass
-
-	def fsdestroy(self):
-		log_call()
-		pass
-
-
-	def new_SqlDir(self,path):
-		log_call()
+		self.db = db
 		try:
-			ino,_ = self._inode_path(path)
+			self.node_id,self.inode,self.store = self.db.DoFn("select id,inode,files from node where name=${name}", name=self.node)
 		except Db.NoData:
-			return -errno.ENOENT
-		res = SqlDir(tree=self, inode=ino)
-		self.db.commit()
-		return res
+			raise RuntimeError("data for '%s' is missing"%(self.node,))
+		try:
+			mode,=db.DoFn("select mode from inode where id=${inode}",inode=self.inode)
+		except Db.NoData:
+			raise RuntimeError("database has not been initialized: inode %d is missing" % (self.inode,))
+		if mode == 0:
+			db.Do("update inode set mode=${dir} where id=${inode}", dir=stat.S_IFDIR|stat.S_IRWXU|stat.S_IRWXG|stat.S_IRWXO, inode=self.inode)
+		db.commit()
 
-	def main(self, *a, **kw):
-		#self.file_class = self.new_SqlFile
-		#self.dir_class = self.new_SqlDir
+	def trigger_bg(self, s=True):
+		self.dbt.lock.acquire()
+		if self.dbt.state is False or s is None:
+			self.dbt.state = s
+			self.dbt.lock.notify()
+		self.dbt.lock.release()
 
-		return Fuse.main(self, *a, **kw)
+	def init(self):
+		log_call()
+		self.dbt = BackgroundUpdater(self)
+		self.dbt.start()
+
+	def destroy(self):
+		log_call()
+		self.trigger_bg(None) # shutdown updater thread
+		self.dbt.join()
+		pass
 
 def opts(server,p=None,usage=None):
-	if p:
+	from fuseparts.subbedopts import SubbedOptParse
+	if p is False:
 		def opt(name,**k):
-			p.add_option(mountopt=name, **k)
+			p.add_option('-o', subopt=name, **k)
 		def rv():
-			return None
-	else:
-		import optparse
-		if p is False:
-			def rv():
-				return p.print_help()
-		else:
-			def rv():
-				return p.parse_args(sys.argv[2:])
-		p = optparse.OptionParser(usage=usage)
+			return p.print_help()
+		p = SubbedOptParse(usage=usage)
+	elif p is None:
 		def opt(name,**k):
-			p.add_option("--"+name, **k)
+			p.add_option('-o', subopt=name, **k)
+		def rv():
+			return p.parse_args(sys.argv[2:])
+		p = SubbedOptParse(usage=usage)
+	else:
+		from optparse import OptionParser
+		p = OptionParser(usage=usage)
+		def opt(name,**k):
+			p.add_option('--'+name, **k)
+		def rv():
+			return p.parse_args(sys.argv[1:])
 
 	opt("node", dest="node", default="node",
 		help="file storage node name [default: %default]")
@@ -608,7 +694,7 @@ def opts(server,p=None,usage=None):
 	return rv()
 
 def main():
-	if sys.argv[1] == "help":
+	if len(sys.argv) < 2 or sys.argv[1] == "help":
 		usage = """
 sqlmount /mountpoint [options ...]
 	Mount an SQL-based file system.
@@ -652,34 +738,28 @@ sqlmount help
 
 * These commands are not implemented yet.
 """
-		p=opts(SqlTree,False,usage)
+		p=opts(SqlFuse,False,usage)
 		sys.exit(0)
 	else:
 		usage = """
-sqlmount: mount a file hierarchy from a SQL database.
+sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 
-sqlmount help  -- list other options
+sqlmount help  -- list other modes and options
+""" 
 
-""" + Fuse.fusage
+		server = SqlFuse()
+		opt,arg = opts(server, usage=usage)
 
-		server = SqlTree(version="%prog " + fuse.__version__,
-				 usage=usage,
-				 dash_s_do='setsingle')
-
-		opts(server, server.parser)
-		# multithread the thing.
-		server.multithreaded = True
-
-		server.parse(values=server, errex=1)
-
-		if server.fuse_args.mount_expected():
-			server.db = Db.Db(dbtye=server.dbtype,host=server.host,port=server.port,database=server.database,username=server.username,password=server.password)
+		db = Db.Db(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
+		server.init_db(db, opt.node)
 	
-			mode,=server.db.DoFn("select mode from inode where id=1")
-			if mode == 0:
-				server.db.Do("update inode set mode=${dir} where id=1", dir=stat.S_IFDIR)
-				server.db.commit()
-		server.main()
+		llfuse.init(server, sys.argv[1], 
+			[  b'fsname=SqlFuse', b'nonempty', b'max_read=1048576' ])
+		try:
+			llfuse.main()
+		finally:
+			llfuse.close()
+		
 
 if __name__ == '__main__':
 	main()
