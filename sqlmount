@@ -103,19 +103,26 @@ class BackgroundUpdater(Thread):
 
 	def run(self):
 		while True:
+			#print("T1")
 			self.lock.acquire()
+			#print("T2")
 			while self.state is False:
+				#print("T4")
 				self.lock.wait()
 			if self.state is None:
+				#print("T5")
 				self.lock.release()
 				return
-			self.state is False
+			#print("T6")
+			self.state = False
 			self.lock.release()
 
 			vals = _slot.values()
 			for val in vals:
+				#print("T7",val)
 				if val.mtime is not None:
 					val.update_bg()
+			#print("T8")
 			sleep(0.5)
 				
 
@@ -134,7 +141,10 @@ class FileOperations(object):
 	def update_bg(self):
 		mt = self.mtime
 		self.mtime = None
-		self.tree.db.Do("update inode set mtime=${mtime},size=${size} where id=${inode}", inode=self.inode, mtime=mt.strftime("%s"), size=self.size )
+		try:
+			self.tree.db.Do("update inode set mtime=${mtime},size=${size} where id=${inode}", inode=self.inode, mtime=mt.strftime("%s"), size=self.size )
+		except Db.NoData:
+			pass # one-second interval
 		self.tree.db.commit()
 
 	def read(self, length,offset):
@@ -158,22 +168,21 @@ class FileOperations(object):
 
 	def release(self):
 		log_call()
-		if val.mtime is not None:
-			val.update_bg()
+		if self.mtime is not None:
+			self.update_bg()
 		self.file.close()
 
 	def _fflush(self):
 		log_call()
 		self.file.flush()
 
-	def fsync(self, isfsyncfile):
+	def fsync(self, data_only):
 		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		self._fflush()
-		if isfsyncfile and hasattr(os, 'fdatasync'):
-			os.fdatasync(self.fd)
+		if data_only and hasattr(os, 'fdatasync'):
+			os.fdatasync(self.file.fileno())
 		else:
-			os.fsync(self.fd)
+			os.fsync(self.file.fileno())
+			self.update_bg()
 
 	def flush(self):
 		log_call()
@@ -273,31 +282,31 @@ class SqlFuse(llfuse.Operations):
 	def _file_path(self, inode):
 		return os.path.join(self.store, str(inode))
 
-	def _inode_path(self, path, tail=0):
-		if path[0] != '/':
-			raise FUSEError(errno.ENOENT)
-		path = path.split('/')
-		while path:
-			name = path.pop()
-			if name != '':
-				break
-		if not tail:
-			path.append(name)
-		depth=0
-		q=[""]
-		qa = {"root":self.inode}
-		for p in path:
-			if p == '':
-				continue
-			depth += 1
-			q.append("JOIN tree AS t%d ON t%d.inode = t%d.parent and t%d.name=${t%d_name}" % (depth, depth-1, depth, depth, depth))
-			qa["t"+str(depth)+"_name"] = p
-		q[0]="SELECT t%d.inode from tree as t0" % (depth,)
-		q.append("where t0.inode=${root}")
-		ino, = self.db.DoFn(" ".join(q),**qa)
-		return ino,name
+#	def _inode_path(self, path, tail=0):
+#		if path[0] != '/':
+#			raise FUSEError(errno.ENOENT)
+#		path = path.split('/')
+#		while path:
+#			name = path.pop()
+#			if name != '':
+#				break
+#		if not tail:
+#			path.append(name)
+#		depth=0
+#		q=[""]
+#		qa = {"root":self.inode}
+#		for p in path:
+#			if p == '':
+#				continue
+#			depth += 1
+#			q.append("JOIN tree AS t%d ON t%d.inode = t%d.parent and t%d.name=${t%d_name}" % (depth, depth-1, depth, depth, depth))
+#			qa["t"+str(depth)+"_name"] = p
+#		q[0]="SELECT t%d.inode from tree as t0" % (depth,)
+#		q.append("where t0.inode=${root}")
+#		ino, = self.db.DoFn(" ".join(q),**qa)
+#		return ino,name
 
-	def lookup(self, inode_p, name):
+	def _lookup(self, inode_p, name):
 		if name == '.':
 			inode = inode_p
 		elif name == '..':
@@ -307,8 +316,10 @@ class SqlFuse(llfuse.Operations):
 				inode, = self.db.DoFn("select inode from tree where parent=${inode} and name=${name}", inode=inode_p, name=name)
 			except Db.NoData:
 				raise(llfuse.FUSEError(errno.ENOENT))
+		return inode
 	    
-		return self.getattr(inode)
+	def lookup(self, inode_p, name):
+		return self.getattr(self._lookup(inode_p,name))
 
 	def handle_exc(self,fn,exc):
 		log_call()
@@ -339,11 +350,15 @@ class SqlFuse(llfuse.Operations):
 		log_call()
 		a=[]
 		b={}
+		print(repr(attr.__dict__))
+		if attr.st_size is not None:
+			with file(self._file_path(inode),"r+") as f:
+				f.truncate(attr.st_size)
 		for f in ("size uid gid atime mtime".split()):
 			v = getattr(attr,"st_"+f)
 			if v is not None:
 				a.append(f)
-				b[f]=attr.st_size
+				b[f]=v
 		if a:
 			a.append("ctime")
 			b["ctime"] = utcnow().strftime("%s")
@@ -372,29 +387,36 @@ class SqlFuse(llfuse.Operations):
 
 	def unlink(self, inode_p, name):
 		log_call()
-		inode = self.lookup(inode_p,name)
+		inode = self._lookup(inode_p,name)
 		mode, = self.db.DoFn("select mode from inode where id=${inode}", inode=inode)
 		if stat.S_ISDIR(mode):
 			raise FUSEError(errno.EISDIR)
 		if not defer_delete(inode):
 			self._remove(inode)
+		else:
+			self.db.commit()
 
 	def rmdir(self, path):
 		log_call()
-		inode = self.lookup(inode_p,name)
+		inode = self._lookup(inode_p,name)
 		mode, = self.db.DoFn("select mode from inode where id=${inode}", inode=inode)
 		if not stat.S_ISDIR(mode):
 			raise FUSEError(errno.ENOTDIR)
 		cnt, = self.db.DoFn("select count(*) from tree where parent=${inode}")
 		if cnt:
 			raise FUSEError(errno.ENOTEMPTY)
-		return self._remove(inode)
+		self._remove(inode)
 
 	def _remove(self,inode):
 		log_call()
-		unlink(self._inode_path(inode))
-		self.db.Do("delete from tree where inode=${inode}")
-		self.db.Do("delete from inode where id=${inode}")
+		try:
+			os.unlink(self._file_path(inode))
+		except OSError as e:
+			if e.errno != errno.ENOENT:
+				raise
+		self.db.Do("delete from tree where inode=${inode}", inode=inode)
+		self.db.Do("delete from inode where id=${inode}", inode=inode)
+		self.db.commit()
 
 	def symlink(self, path, path1):
 		log_call()
@@ -447,11 +469,10 @@ class SqlFuse(llfuse.Operations):
 		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
 
-	def access(self, path, mode):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		#if not os.access("." + path, mode):
-		#	raise FUSEError(errno.EACCES)
+## not called because default_permissions is set
+#	def access(self, inode, mode, ctx):
+#		log_call()
+#		raise FUSEError(errno.EOPNOTSUPP)
 
 #    This is how we could add stub extended attribute handlers...
 #    (We can't have ones which aptly delegate requests to the underlying fs
@@ -523,7 +544,7 @@ class SqlFuse(llfuse.Operations):
 		try:
 			ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
 		except Db.NoData:
-			ino = self.db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime) values(${mode},${uid},${gid},${now},${now},${now})", mode=mode|stat.S_IFREG, uid=ctx.uid,gid=ctx.gid, now=now().strftime("%s"))
+			ino = self.db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime) values(${mode},${uid},${gid},${now},${now},${now})", mode=mode|stat.S_IFREG, uid=ctx.uid,gid=ctx.gid, now=utcnow().strftime("%s"))
 			self.db.Do("insert into tree (inode,parent,name) values(${ino},${par},${name})", ino=ino,par=par,name=name)
 		else:
 			if flags & os.O_EXCL:
@@ -555,14 +576,9 @@ class SqlFuse(llfuse.Operations):
 		if 'w' in self.file.mode or 'a' in self.file.mode:
 			self.file.flush()
 
-	def fsync(self, *a,**k): #isfsyncfile):
+	def fsync(self, fh,data_only): #isfsyncfile):
 		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		self._fflush()
-		if isfsyncfile and hasattr(os, 'fdatasync'):
-			os.fdatasync(self.fd)
-		else:
-			os.fsync(self.fd)
+		return old_slot(fh).fsync(data_only)
 
 	def flush(self, fh):
 		log_call()
@@ -637,11 +653,16 @@ class SqlFuse(llfuse.Operations):
 		db.commit()
 
 	def trigger_bg(self, s=True):
+		#print("R1")
 		self.dbt.lock.acquire()
+		#print("R2")
 		if self.dbt.state is False or s is None:
+			#print("R3")
 			self.dbt.state = s
 			self.dbt.lock.notify()
+		#print("R4")
 		self.dbt.lock.release()
+		#print("R5")
 
 	def init(self):
 		log_call()
@@ -754,7 +775,7 @@ sqlmount help  -- list other modes and options
 		server.init_db(db, opt.node)
 	
 		llfuse.init(server, sys.argv[1], 
-			[  b'fsname=SqlFuse', b'nonempty', b'max_read=1048576' ])
+			[  b'fsname=SqlFuse', b'nonempty', b'max_read=1048576', b'default_permissions', b'allow_root' ])
 		try:
 			llfuse.main()
 		finally:
