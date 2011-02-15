@@ -55,20 +55,39 @@ insert into `tree` (`inode`,`parent`,`name`) values (1,1,"");
 alter table `tree` change `parent` `parent` bigint(20) unsigned NOT NULL;
 
 -- 
+-- You can have multiple root nodes in the system.
+-- 
+CREATE TABLE `root` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `inode` bigint(20) unsigned NOT NULL,
+  `name` varchar(255) NOT NULL,
+  `uptodate` bigint(20) unsigned NOT NULL DEFAULT '0',
+-- statistics
+  `nfiles` bigint(20) unsigned not null default '0',
+  `ndirs` bigint(20) unsigned not null default '0',
+  `nblocks` bigint(20) unsigned not null default '0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `name` (`name`),
+  KEY `fk_root_inode` (`inode`),
+  CONSTRAINT `fk_root_inode` FOREIGN KEY (`inode`) REFERENCES `inode` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+insert into `root`(`id`,`inode`,`name`) values(1,1,'master');
+
+-- 
 -- Multiple instances can have disparate directory views.
 -- 
 DROP TABLE IF EXISTS `node`;
 CREATE TABLE `node` (
   `id` int(10) unsigned NOT NULL auto_increment,
-  `inode` bigint(20) unsigned NOT NULL, -- my root
+  `root` int(10) unsigned NOT NULL, -- my root
   `name` varchar(255) NOT NULL,
   `files` varchar(1024) NOT NULL, -- local file system path
   `event` bigint(20) unsigned NOT NULL default 0,
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
-  constraint `fk_node_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade
+  constraint `fk_node_root` foreign key(`root`) references `root`(`id`) on delete cascade
 ) DEFAULT CHARSET=utf8;
-insert into `node`(`id`,`inode`,`name`,`files`) values(1,1,'default','/tmp/sqlmount');
+insert into `node`(`id`,`root`,`name`,`files`) values(1,1,'default','/tmp/sqlmount');
 
 -- 
 -- Remember file updates (and deletes). We need this to copy files.
