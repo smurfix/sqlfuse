@@ -21,61 +21,10 @@ from threading import Lock,Thread,Condition
 from time import sleep
 
 import datetime
-utcnow = datetime.datetime.utcnow
+def nowtuple():
+	now = datetime.datetime.utcnow()
+	return (int(now.strftime("%s")),int(now.strftime("%f000")))
 
-# map fdnum ⇒ filehandle
-_slot = {}
-_slot_next = 1
-def new_slot(x):
-	global _slot_next
-	_slot_next += 1
-	while _slot_next in _slot:
-		if _slot_next == 999999999:
-			_slot_next = 1
-		else:
-			_slot_next += 1
-	_slot[_slot_next] = x
-	return _slot_next
-def old_slot(x):
-	return _slot[x]
-def del_slot(x):
-	res = _slot[x]
-	del _slot[x]
-	return res
-
-# busy-inode flag
-_busy = {}
-def set_busy(i):
-	if i in _busy:
-		_busy[i] += 1
-	else:
-		_busy[i] = 1
-def is_busy(i):
-	return (i in _busy)
-def clr_busy(i):
-	#return True if it's to be deleted
-	b = _busy[i]
-	if b < 0:
-		b += 1
-		if b == 0:
-			del _busy[i]
-			return True
-	else:
-		b -= 1
-		if b == 0:
-			del _busy[i]
-	return False
-def defer_delete(i):
-	if i not in _busy:
-		return False
-	if _busy[i] > 0:
-		_busy[i] = -_busy[i]
-	return True
-def no_defer_delete(i):
-	if i not in _busy:
-		return
-	if _busy[i] < 0:
-		_busy[i] = -_busy[i]
 
 def log_call():
 	c=inspect.currentframe(1)
@@ -117,11 +66,17 @@ class BackgroundUpdater(Thread):
 			self.state = False
 			self.lock.release()
 
-			vals = _slot.values()
-			for val in vals:
-				#print("T7",val)
-				if val.mtime is not None:
-					val.update_bg()
+			with self.tree._update_lock:
+				u = self.tree._update
+				self.tree._update = {}
+				self.tree._update_old = u
+			for inode,data in u.iteritems():
+				print(">>> update",inode,data)
+				self.tree._inode_update1(inode,data)
+			with self.tree._update_lock:
+				self.tree._update_old = None
+			self.tree.db.commit()
+
 			#print("T8")
 			sleep(0.5)
 				
@@ -135,21 +90,14 @@ class FileOperations(object):
 		self.lock = Lock()
 		mode = flag2mode(flags)
 		self.mode = mode[0]
-		self.size, = tree.db.DoFn("select size from inode where id=${inode}",inode=inode)
 		self.file = open(os.path.join(tree.store,str(inode)),mode)
-
-	def update_bg(self):
-		mt = self.mtime
-		self.mtime = None
-		try:
-			self.tree.db.Do("update inode set mtime=${mtime},size=${size} where id=${inode}", inode=self.inode, mtime=mt.strftime("%s"), size=self.size )
-		except Db.NoData:
-			pass # one-second interval
-		self.tree.db.commit()
+		self.size = os.fstat(self.file.fileno()).st_size
+		self.tree.set_busy(inode)
 
 	def read(self, length,offset):
 		log_call()
 		with self.lock:
+			self.tree._inode_set(self.inode,"atime",nowtuple())
 			self.file.seek(offset)
 			return self.file.read(length)
 
@@ -162,15 +110,17 @@ class FileOperations(object):
 			end = offset+len(buf)
 			if self.size < end:
 				self.size = end
-			self.mtime = utcnow()
+				self.tree._inode_set(self.inode,"size",end)
+			self.tree._inode_set(self.inode,"mtime",nowtuple())
 			self.tree.trigger_bg()
 			return len(buf)
 
 	def release(self):
 		log_call()
-		if self.mtime is not None:
-			self.update_bg()
+		self.tree._inode_update(self.inode)
 		self.file.close()
+		if self.tree.clr_busy(self.inode):
+			self.tree._remove(self.inode)
 
 	def _fflush(self):
 		log_call()
@@ -182,7 +132,7 @@ class FileOperations(object):
 			os.fdatasync(self.file.fileno())
 		else:
 			os.fsync(self.file.fileno())
-			self.update_bg()
+			self.tree._inode_update(self.inode)
 
 	def flush(self):
 		log_call()
@@ -254,8 +204,11 @@ class DirOperations(object):
 			yield (".", self.tree.getattr(self.inode), 0)
 			offset = 1
 		if offset == 1:
-			par, = self.tree.db.DoFn("select parent from tree where inode=${inode}", inode=self.inode)
-			yield ("..", self.tree.getattr(self.inode), 0)
+			if self.inode == self.tree.inode:
+				par = self.inode
+			else:
+				par, = self.tree.db.DoFn("select parent from tree where inode=${inode}", inode=self.inode)
+			yield ("..", self.tree.getattr(par), 0)
 			offset = 2
 
 		for n,i in self.tree.db.DoSelect("select name,inode from tree where parent=${par} and name != '' and inode > ${offset}", par=self.inode,offset=offset-2, _empty=True,_store=True):
@@ -279,8 +232,128 @@ class SqlFuse(llfuse.Operations):
 	database=Cf.get("SQL_DB","sqlfuse")
 	dbtype=Cf.get("SQL_DBTYPE","mysql")
 
+	def __init__(self,*a,**k):
+		super(SqlFuse,self).__init__(*a,**k)
+		self._slot = {}
+		self._slot_next = 1
+		self._busy = {}
+		self._busy_lock = Lock()
+		self._update = {}
+		self._update_lock = Lock()
+		self._update_old = None
+
+# map fdnum ⇒ filehandle
+	def new_slot(self,x):
+		self._slot_next += 1
+		while self._slot_next in self._slot:
+			if self._slot_next == 999999999:
+				self._slot_next = 1
+			else:
+				self._slot_next += 1
+		self._slot[self._slot_next] = x
+		return self._slot_next
+	def old_slot(self,x):
+		return self._slot[x]
+	def del_slot(self,x):
+		res = self._slot[x]
+		del self._slot[x]
+		return res
+
+# busy-inode flag
+	def set_busy(self,i):
+		with self._busy_lock:
+			if i in self._busy:
+				if self._busy[i] > 0:
+					self._busy[i] += 1
+				else:
+					self._busy[i] += 1
+			else:
+				self._busy[i] = 1
+	def clr_busy(self,i):
+		#return True if it's to be deleted
+		with self._busy_lock:
+			b = self._busy[i]
+			if b < 0:
+				b += 1
+				if b == 0:
+					del self._busy[i]
+					return True
+			else:
+				b -= 1
+				if b == 0:
+					del self._busy[i]
+			return False
+	def defer_delete(self,i):
+		with self._busy_lock:
+			if i not in self._busy:
+				return False
+			if self._busy[i] > 0:
+				self._busy[i] = -self._busy[i]
+			return True
+	def no_defer_delete(self,i):
+		with self._busy_lock:
+			if i not in self._busy:
+				return
+			if self._busy[i] < 0:
+				self._busy[i] = -self._busy[i]
+
+# background inode update
+	def _inode_set(self, inode,attr,val, do_time=True):
+		log_call()
+		with self._update_lock:
+			data = self._update.get(inode,None)
+			if data is None:
+				data = {}
+				self._update[inode] = data
+			data[attr] = val
+			if not do_time:
+				pass
+			elif attr == "size":
+				data["mtime"] = nowtuple()
+			else:
+				data["ctime"] = nowtuple()
+
+	def _inode_get(self, inode,attr,val):
+		with self._update_lock:
+			u = self._update.get(inode,None)
+			if not u and self._update_old:
+				u = self._update_old.get(inode,None)
+		if not u or attr not in u: return val
+		return u[attr]
+		
+	def _inode_update(self, inode):
+		log_call()
+		with self._update_lock:
+			data = self._update.get(inode,None)
+			if not data: return
+			del self._update[inode]
+		self._inode_update1(inode,data)
+
+	def _inode_update1(self, inode, data):
+		log_call()
+		a = []
+		b = {}
+		#print("T7",val)
+		for f,v in data.items():
+			a.append(f)
+			if f.endswith("time"):
+				b[f]=v[0]
+				b[f+"ns"]=v[1]
+			else:
+				b[f]=v
+		self.db.Do("update inode set "+(", ".join(("%s=${%s}"%(x,x) for x in a)))+" where id=${inode}", inode=inode,**b)
+		
+
 	def _file_path(self, inode):
-		return os.path.join(self.store, str(inode))
+		fp = []
+		CHARS="ABCDEGHIJKLMNOPQRSTUVWXYZ"
+		while inode > 99:
+			fp.append(CHARS[inode % len(CHARS)])
+			inode //= len(CHARS)
+		p = os.path.join(self.store, *fp)
+		if not os.path.exists(p):
+			os.makedirs(p, 700)
+		return os.path.join(p, str(inode))
 
 #	def _inode_path(self, path, tail=0):
 #		if path[0] != '/':
@@ -322,8 +395,14 @@ class SqlFuse(llfuse.Operations):
 		return self.getattr(self._lookup(inode_p,name))
 
 	def handle_exc(self,fn,exc):
-		log_call()
 		traceback.print_exc()
+		self.db.rollback()
+
+	def done(self, exc = None):
+		if exc is None:
+			self.db.commit()
+		else:
+			self.db.rollback()
 
 	def getattr(self, inode):
 		log_call()
@@ -331,39 +410,40 @@ class SqlFuse(llfuse.Operations):
 		res.st_ino = inode
 		res.st_nlink, = self.db.DoFn("select count(*) from tree where inode=${inode}",inode=inode)
 		d = self.db.DoFn("select * from inode where id=${inode}", inode=inode, _dict=1)
-		for k,v in d.iteritems():
-			setattr(res,"st_"+k,v)
+		for k in ("size mode uid gid atime mtime ctime rdev".split()):
+			if k.endswith("time"):
+				try:
+					v = self._inode_get(inode,k,None)
+					if v is None:
+						v = (d[k],d[k+"_ns"])
+					setattr(res,"st_"+k, v[0])
+					setattr(res,"st_"+k+"_ns", v[1])
+				except TypeError:
+					raise TypeError("float %s got %r (%s)"%(k,d[k],d[k].__class__.__name__))
+			else:
+				setattr(res,"st_"+k, self._inode_get(inode,k,d[k]))
 		if stat.S_ISDIR(res.st_mode): 
 			res.st_nlink += 2
 		res.st_blocks = ((d['size']+4095)//4096)
 		res.st_blksize = 4096
 		res.st_dev=0
 		res.st_rdev=0
-		res.generation = 1;
+		res.generation = 1; ## TODO: store in DB
 		res.attr_timeout = 10;
 		res.entry_timeout = 10;
 		print(repr(res.__dict__))
-		self.db.commit()
 		return res
 
 	def setattr(self, inode, attr):
 		log_call()
-		a=[]
-		b={}
 		print(repr(attr.__dict__))
 		if attr.st_size is not None:
 			with file(self._file_path(inode),"r+") as f:
 				f.truncate(attr.st_size)
-		for f in ("size uid gid atime mtime".split()):
+		for f in ("size uid gid atime mtime rdev".split()):
 			v = getattr(attr,"st_"+f)
 			if v is not None:
-				a.append(f)
-				b[f]=v
-		if a:
-			a.append("ctime")
-			b["ctime"] = utcnow().strftime("%s")
-
-			self.db.Do("update inode set "+(", ".join(("%s=${%s}"%(x,x) for x in a)))+" where id=${inode}", inode=inode,**b)
+				self._inode_set(inode,f,v)
 		return self.getattr(inode)
 
 	def readlink(self, inode):
@@ -371,19 +451,19 @@ class SqlFuse(llfuse.Operations):
 		raise FUSEError(errno.EOPNOTSUPP)
 
 	def opendir(self, inode):
-		return new_slot(DirOperations(tree=self, inode=inode))
+		return self.new_slot(DirOperations(tree=self, inode=inode))
 
 	def readdir(self, fh, offset):
 		log_call()
-		return old_slot(fh).read(offset)
+		return self.old_slot(fh).read(offset)
 		
 	def fsyncdir(self, fh):
 		log_call()
-		return old_slot(fh).fsync()
+		return self.old_slot(fh).fsync()
 
 	def releasedir(self, fh):
 		log_call()
-		return del_slot(fh).release()
+		return self.del_slot(fh).release()
 
 	def unlink(self, inode_p, name):
 		log_call()
@@ -391,10 +471,8 @@ class SqlFuse(llfuse.Operations):
 		mode, = self.db.DoFn("select mode from inode where id=${inode}", inode=inode)
 		if stat.S_ISDIR(mode):
 			raise FUSEError(errno.EISDIR)
-		if not defer_delete(inode):
+		if not self.defer_delete(inode):
 			self._remove(inode)
-		else:
-			self.db.commit()
 
 	def rmdir(self, path):
 		log_call()
@@ -416,7 +494,6 @@ class SqlFuse(llfuse.Operations):
 				raise
 		self.db.Do("delete from tree where inode=${inode}", inode=inode)
 		self.db.Do("delete from inode where id=${inode}", inode=inode)
-		self.db.commit()
 
 	def symlink(self, path, path1):
 		log_call()
@@ -446,7 +523,8 @@ class SqlFuse(llfuse.Operations):
 		#f.close()
 
 	def mknod(self, parent, name, mode, rdev, ctx):
-		log_call()
+		ino = self._new_inode(par,name,mode,ctx,rdev)
+		
 		raise FUSEError(errno.EOPNOTSUPP)
 
 	def mkdir(self, parent, name, mode, rdev, ctx):
@@ -479,7 +557,6 @@ class SqlFuse(llfuse.Operations):
 #    because Python lacks a standard xattr interface.)
 #
 	def getxattr(self, inode, name):
-		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
 		val = name.swapcase() + '@' + path
 		if size == 0:
@@ -488,13 +565,11 @@ class SqlFuse(llfuse.Operations):
 		return val
 
 	def setxattr(self, inode, name, value):
-		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
 		# TODO
 		return
 
 	def listxattr(self, inode):
-		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
 		# We use the "user" namespace to please XFS utils
 		aa = ["user." + a for a in ("foo", "bar")]
@@ -505,7 +580,6 @@ class SqlFuse(llfuse.Operations):
 		return aa
 
 	def removexattr(self, inode, name):
-		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
 		# TODO
 		return
@@ -533,42 +607,36 @@ class SqlFuse(llfuse.Operations):
 		return os.statvfs(".")
 
 	def open(self, inode,flags):
-		log_call()
 		res = FileOperations(tree=self, inode=inode, flags=flags)
-		self.db.commit()
-		return new_slot(res)
+		return self.new_slot(res)
+
+	def _new_inode(self, par,name,mode,ctx,rdev=None):
+		now,now_ns = nowtuple()
+		ino = self.db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev})", mode=mode|stat.S_IFREG, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev)
+		self.db.Do("insert into tree (inode,parent,name) values(${ino},${par},${name})", ino=ino,par=par,name=name)
+		return ino
 
 	def create(self, par,name,mode,ctx):
-		log_call()
 		ino = None
 		try:
 			ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
 		except Db.NoData:
-			ino = self.db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime) values(${mode},${uid},${gid},${now},${now},${now})", mode=mode|stat.S_IFREG, uid=ctx.uid,gid=ctx.gid, now=utcnow().strftime("%s"))
-			self.db.Do("insert into tree (inode,parent,name) values(${ino},${par},${name})", ino=ino,par=par,name=name)
+			ino = self._new_inode(par,name,mode|stat.S_IFREG,ctx)
 		else:
 			if flags & os.O_EXCL:
-				self.db.commit()
 				raise FUSEError(errno.EEXIST)
 
 		res = FileOperations(tree=self, inode=ino, flags=os.O_RDWR|os.O_CREAT)
-		return (new_slot(res),self.getattr(ino))
+		return (self.new_slot(res),self.getattr(ino))
 
 	def read(self, fh,off,size):
-		log_call()
-		res = old_slot(fh).read(size,off)
-		log_call()
-		return res
+		return self.old_slot(fh).read(size,off)
 
 	def write(self, fh,off,buf):
-		log_call()
-		res = old_slot(fh).write(buf,off)
-		log_call()
-		return res
+		return self.old_slot(fh).write(buf,off)
 
 	def release(self, fh):
-		log_call()
-		return del_slot(fh).release()
+		return self.del_slot(fh).release()
 
 	def _fflush(self):
 		log_call()
@@ -577,12 +645,10 @@ class SqlFuse(llfuse.Operations):
 			self.file.flush()
 
 	def fsync(self, fh,data_only): #isfsyncfile):
-		log_call()
-		return old_slot(fh).fsync(data_only)
+		return self.old_slot(fh).fsync(data_only)
 
 	def flush(self, fh):
-		log_call()
-		old_slot(fh).flush()
+		self.old_slot(fh).flush()
 
 	def fgetattr(self, *a,**k):
 		log_call()
@@ -650,7 +716,6 @@ class SqlFuse(llfuse.Operations):
 			raise RuntimeError("database has not been initialized: inode %d is missing" % (self.inode,))
 		if mode == 0:
 			db.Do("update inode set mode=${dir} where id=${inode}", dir=stat.S_IFDIR|stat.S_IRWXU|stat.S_IRWXG|stat.S_IRWXO, inode=self.inode)
-		db.commit()
 
 	def trigger_bg(self, s=True):
 		#print("R1")
@@ -775,7 +840,7 @@ sqlmount help  -- list other modes and options
 		server.init_db(db, opt.node)
 	
 		llfuse.init(server, sys.argv[1], 
-			[  b'fsname=SqlFuse', b'nonempty', b'max_read=1048576', b'default_permissions', b'allow_root' ])
+			[  b'fsname=SqlFuse', b'nonempty', b'max_read=1048576', b'default_permissions', b'allow_other', b'dev', b'suid'])
 		try:
 			llfuse.main()
 		finally:

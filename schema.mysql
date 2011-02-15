@@ -24,13 +24,14 @@ CREATE TABLE `inode` (
   `mode` int(11) NOT NULL default '0',
   `uid` int(10) unsigned NOT NULL default '0',
   `gid` int(10) unsigned NOT NULL default '0',
-  `atime` int(10) unsigned NOT NULL default '0',
-  `mtime` int(10) unsigned NOT NULL default '0',
-  `ctime` int(10) unsigned NOT NULL default '0',
+  `atime` int(10) NOT NULL default '0',
+  `mtime` int(10) NOT NULL default '0',
+  `ctime` int(10) NOT NULL default '0',
   `atime_ns` int(10) unsigned NOT NULL default '0',
   `mtime_ns` int(10) unsigned NOT NULL default '0',
   `ctime_ns` int(10) unsigned NOT NULL default '0',
   `size` bigint(20) NOT NULL default '0', -- mirrors file size
+  `rdev` int(10) NULL,
   `event` bigint(20) unsigned NULL, -- ID of file's latest event record
   PRIMARY KEY (`id`),
   UNIQUE KEY `event` (`event`)
