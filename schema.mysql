@@ -64,7 +64,6 @@ CREATE TABLE `root` (
   `uptodate` bigint(20) unsigned NOT NULL DEFAULT '0',
 -- statistics
   `nfiles` bigint(20) unsigned not null default '0',
-  `ndirs` bigint(20) unsigned not null default '0',
   `nblocks` bigint(20) unsigned not null default '0',
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
