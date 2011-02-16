@@ -61,27 +61,31 @@ class BackgroundUpdater(Thread):
 		self.state = False
 
 	def run(self):
+		"""Background loop."""
 		while True:
 			self.lock.acquire()
 			while self.state is False:
 				self.lock.wait()
 			if self.state is None:
 				self.lock.release()
+				self._run()
 				return
 			self.state = False
 			self.lock.release()
-
-			with self.tree._update_lock:
-				u = self.tree._update
-				self.tree._update = {}
-				self.tree._update_old = u
-			for inode,data in u.iteritems():
-				self.tree._inode_update1(inode,data)
-			with self.tree._update_lock:
-				self.tree._update_old = None
-			self.tree.db.commit()
-
+			self._run()
 			sleep(0.5)
+
+	def _run(self):
+		"""Sync all inodes"""
+		with self.tree._update_lock:
+			u = self.tree._update
+			self.tree._update = {}
+			self.tree._update_old = u
+		for inode,data in u.iteritems():
+			self.tree._inode_update1(inode,data)
+		with self.tree._update_lock:
+			self.tree._update_old = None
+		self.tree.db.commit()
 				
 
 class FileOperations(object):
