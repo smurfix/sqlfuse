@@ -24,15 +24,18 @@ from time import sleep
 
 import datetime
 def nowtuple():
+	"""Return the current time as (seconds-from-epoch,milliseconds) tuple."""
 	now = datetime.datetime.utcnow()
 	return (int(now.strftime("%s")),int(now.strftime("%f000")))
 
 
 def log_call():
+	"""Debugging aid"""
 	c=inspect.currentframe(1)
 	print(">>>",c.f_code.co_name,"@",c.f_lineno,repr(c.f_locals))
 	
 def flag2mode(flags):
+	"""translate OS flag (O_RDONLY) into access mode ("r")."""
 	if flags & os.O_APPEND:
 		mode = "a"
 	else:
@@ -46,6 +49,11 @@ def flag2mode(flags):
 	return mode
 
 class BackgroundUpdater(Thread):
+	"""Updating inode information, particularly size+mtime, for each
+	write() call is prohibitive. Therefore, metadata updates are accumulated,
+	and each 0.5sec a background thread wakes up (if necessary) and
+	writes all inode updates to the database.
+	"""
 	def __init__(self,tree):
 		super(BackgroundUpdater,self).__init__()
 		self.tree = tree
@@ -77,8 +85,13 @@ class BackgroundUpdater(Thread):
 				
 
 class FileOperations(object):
+	"""Operations on open files.
+	"""
 	mtime = None
 	def __init__(self, tree, inode, flags):
+		"""Open the file. Also remember that the inode is in use
+		so that delete calls get delayed.
+		"""
 		self.tree = tree
 		self.inode = inode
 		self.lock = Lock()
@@ -89,12 +102,15 @@ class FileOperations(object):
 		self.tree.set_busy(inode)
 
 	def read(self, length,offset):
+		"""Read file, updating atime"""
 		with self.lock:
 			self.tree._inode_set(self.inode,"atime",nowtuple(), do_time=False)
 			self.file.seek(offset)
 			return self.file.read(length)
 
 	def write(self, buf,offset):
+		"""Write file, updating file size, possibly updating size"""
+		# TODO: use fstat() for size info, access may be concurrent
 		with self.lock:
 			self.file.seek(offset)
 			self.file.write(buf)
@@ -110,6 +126,7 @@ class FileOperations(object):
 			return len(buf)
 
 	def release(self):
+		"""The last process closes the file."""
 		self.tree._inode_update(self.inode)
 		self.file.close()
 		if self.tree.clr_busy(self.inode):
@@ -119,6 +136,7 @@ class FileOperations(object):
 		self.file.flush()
 
 	def fsync(self, data_only):
+		"""self-explanatory :-P"""
 		if data_only and hasattr(os, 'fdatasync'):
 			os.fdatasync(self.file.fileno())
 		else:
@@ -126,17 +144,8 @@ class FileOperations(object):
 			self.tree._inode_update(self.inode)
 
 	def flush(self):
+		"""One process closeds the file"""
 		self._fflush()
-
-	def fgetattr(self):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		return os.fstat(self.fd)
-
-	def ftruncate(self, len):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		self.file.truncate(len)
 
 	def lock(self, cmd, owner, **kw):
 		log_call()
@@ -366,8 +375,6 @@ class SqlFuse(llfuse.Operations):
 		return os.path.join(p, ino)
 
 #	def _inode_path(self, path, tail=0):
-#		if path[0] != '/':
-#			raise FUSEError(errno.ENOENT)
 #		path = path.split('/')
 #		while path:
 #			name = path.pop()
@@ -500,32 +507,17 @@ class SqlFuse(llfuse.Operations):
 		self.db.Do("update root set nfiles=nfiles-1 where id=${root} and nfiles>0", root=self.root_id, _empty=1)
 		self.db.Do("update root set nblocks=nblocks-${size} where id=${root} and nblocks>0", root=self.root_id,size=size, _empty=1)
 
-	def symlink(self, path, path1):
+	def symlink(self, inode_parent, name, target, ctx):
 		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
 
-	def rename(self, path, path1):
+	def rename(self, inode_parent_old, name_old, inode_parent_new, name_new):
 		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
 
-	def link(self, path, path1):
+	def link(self, inode, new_parent_inode, new_name):
 		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
-
-	def chmod(self, path, mode):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-
-	def chown(self, path, user, group):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-
-	def truncate(self, path, len):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		#f = open("." + path, "a")
-		#f.truncate(len)
-		#f.close()
 
 	def mknod(self, parent, name, mode, rdev, ctx):
 		log_call()
@@ -536,31 +528,15 @@ class SqlFuse(llfuse.Operations):
 		ino = self._new_inode(parent,name,(mode&0o7777)|stat.S_IFDIR,ctx)
 		return self.getattr(ino)
 
-	def utime(self, path, times):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-
-#    The following utimens method would do the same as the above utime method.
-#    We can't make it better though as the Python stdlib doesn't know of
-#    subsecond preciseness in acces/modify times.
-#  
-	def utimens(self, path, ts_acc, ts_mod):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-
 	def bmap(self, *a,**k):
 		log_call()
 		raise FUSEError(errno.EOPNOTSUPP)
 
-## not called because default_permissions is set
+## not used, because the 'default_permissions' option is set
 #	def access(self, inode, mode, ctx):
 #		log_call()
 #		raise FUSEError(errno.EOPNOTSUPP)
 
-#    This is how we could add stub extended attribute handlers...
-#    (We can't have ones which aptly delegate requests to the underlying fs
-#    because Python lacks a standard xattr interface.)
-#
 	def getxattr(self, inode, name):
 		raise FUSEError(errno.EOPNOTSUPP)
 		val = name.swapcase() + '@' + path
@@ -590,22 +566,9 @@ class SqlFuse(llfuse.Operations):
 		return
 
 	def statfs(self):
-		"""
-		Should return an object with statvfs attributes (f_bsize, f_frsize...).
-		Eg., the return value of os.statvfs() is such a thing (since py 2.2).
-		If you are not reusing an existing statvfs object, start with
-		fuse.StatVFS(), and define the attributes.
-
-		To provide usable information (ie., you want sensible df(1)
-		output, you are suggested to specify the following attributes:
-
-			- f_bsize - preferred size of file blocks, in bytes
-			- f_frsize - fundamental size of file blcoks, in bytes
-				[if you have no idea, use the same as blocksize]
-			- f_blocks - total number of blocks in the filesystem
-			- f_bfree - number of free blocks
-			- f_files - total number of file inodes
-			- f_ffree - nunber of free file inodes
+		"""\
+		File system status.
+		We recycle some values, esp. free space, from the underlying storage.
 		"""
 		s = llfuse.StatvfsData()
 		osb = os.statvfs(self.store)
@@ -616,17 +579,16 @@ class SqlFuse(llfuse.Operations):
 		s.f_bavail = (osb.f_bavail * osb.f_bsize) // BLOCKSIZE
 		s.f_ffree = osb.f_ffree
 		s.f_favail = osb.f_favail
-		s.f_namemax = 1023
+		s.f_namemax = 255 # see SQL schema
 
 		s.f_blocks += s.f_bfree
 		s.f_files += s.f_ffree
 		return s
 
-	def open(self, inode,flags):
-		res = FileOperations(tree=self, inode=inode, flags=flags)
-		return self.new_slot(res)
-
 	def _new_inode(self, par,name,mode,ctx,rdev=None):
+		"""\
+		Helper to create a new named inode.
+		"""
 		now,now_ns = nowtuple()
 		ino = self.db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev)
 		self.db.Do("insert into tree (inode,parent,name) values(${ino},${par},${name})", ino=ino,par=par,name=name)
@@ -635,7 +597,13 @@ class SqlFuse(llfuse.Operations):
 		self._inode_delay(ino)
 		return ino
 
+	def open(self, inode,flags):
+		"""Existing file."""
+		res = FileOperations(tree=self, inode=inode, flags=flags)
+		return self.new_slot(res)
+
 	def create(self, par,name,mode,ctx):
+		"""New file."""
 		ino = None
 		try:
 			ino, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=par,name=name)
@@ -649,35 +617,24 @@ class SqlFuse(llfuse.Operations):
 		return (self.new_slot(res),self.getattr(ino))
 
 	def read(self, fh,off,size):
+		"""Delegated to the file object."""
 		return self.old_slot(fh).read(size,off)
 
 	def write(self, fh,off,buf):
+		"""Delegated to the file object."""
 		return self.old_slot(fh).write(buf,off)
 
 	def release(self, fh):
+		"""Delegated to the file object."""
 		return self.del_slot(fh).release()
 
-	def _fflush(self):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		if 'w' in self.file.mode or 'a' in self.file.mode:
-			self.file.flush()
-
 	def fsync(self, fh,data_only): #isfsyncfile):
+		"""Delegated to the file object."""
 		return self.old_slot(fh).fsync(data_only)
 
 	def flush(self, fh):
+		"""Delegated to the file object."""
 		self.old_slot(fh).flush()
-
-	def fgetattr(self, *a,**k):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		return os.fstat(self.fd)
-
-	def ftruncate(self, *a,**k):
-		log_call()
-		raise FUSEError(errno.EOPNOTSUPP)
-		self.file.truncate(len)
 
 	def lock(self, *a,**k): #cmd, owner):
 		log_call()
@@ -706,26 +663,30 @@ class SqlFuse(llfuse.Operations):
 
 		# Convert fcntl-ish lock parameters to Python's weird
 		# lockf(3)/flock(2) medley locking API...
-		op = { fcntl.F_UNLCK : fcntl.LOCK_UN,
-			   fcntl.F_RDLCK : fcntl.LOCK_SH,
-			   fcntl.F_WRLCK : fcntl.LOCK_EX }[kw['l_type']]
-		if cmd == fcntl.F_GETLK:
-			raise FUSEError(errno.EOPNOTSUPP)
-		elif cmd == fcntl.F_SETLK:
-			if op != fcntl.LOCK_UN:
-				op |= fcntl.LOCK_NB
-		elif cmd == fcntl.F_SETLKW:
-			pass
-		else:
-			raise FUSEError(errno.EINVAL)
-
-		fcntl.lockf(self.fd, op, kw['l_start'], kw['l_len'])
+#		op = { fcntl.F_UNLCK : fcntl.LOCK_UN,
+#			   fcntl.F_RDLCK : fcntl.LOCK_SH,
+#			   fcntl.F_WRLCK : fcntl.LOCK_EX }[kw['l_type']]
+#		if cmd == fcntl.F_GETLK:
+#			raise FUSEError(errno.EOPNOTSUPP)
+#		elif cmd == fcntl.F_SETLK:
+#			if op != fcntl.LOCK_UN:
+#				op |= fcntl.LOCK_NB
+#		elif cmd == fcntl.F_SETLKW:
+#			pass
+#		else:
+#			raise FUSEError(errno.EINVAL)
+#
+#		fcntl.lockf(self.fd, op, kw['l_start'], kw['l_len'])
 
 	def init_db(self,db,node):
+		"""\
+		Setup the database part of the file system's operation.
+		"""
 		# TODO: setup a copying thread
 		self.db = db
+		self.node = node
 		try:
-			self.node_id,self.root_id,self.inode,self.store = self.db.DoFn("select node.id,root.id,root.inode,node.files from node,root where root.id=node.root and node.name=${name}", name=self.node)
+			self.node_id,self.root_id,self.inode,self.store = self.db.DoFn("select node.id,root.id,root.inode,node.files from node,root where root.id=node.root and node.name=${name}", name=node)
 		except Db.NoData:
 			raise RuntimeError("data for '%s' is missing"%(self.node,))
 		try:
@@ -736,6 +697,9 @@ class SqlFuse(llfuse.Operations):
 			db.Do("update inode set mode=${dir} where id=${inode}", dir=stat.S_IFDIR|stat.S_IRWXU|stat.S_IRWXG|stat.S_IRWXO, inode=self.inode)
 
 	def trigger_bg(self, s=True):
+		"""\
+		Start off the background sync thread.
+		"""
 		self.dbt.lock.acquire()
 		if self.dbt.state is False or s is None:
 			self.dbt.state = s
@@ -743,15 +707,27 @@ class SqlFuse(llfuse.Operations):
 		self.dbt.lock.release()
 
 	def init(self):
+		"""\
+		Last step before running the file system mainloop.
+		"""
 		self.dbt = BackgroundUpdater(self)
 		self.dbt.start()
 
 	def destroy(self):
+		"""\
+		Unmounting: tell the background job to stop.
+		"""
 		self.trigger_bg(None) # shutdown updater thread
 		self.dbt.join()
 		pass
 
 def opts(server,p=None,usage=None):
+	"""\
+	Generate option list. 'p' may be
+	* False: print usage ('-o FOO'-style arguments)
+	* None:  use '-o FOO' style arguments (for mounting)
+	* True:  use '--FOO' style arguments (for everything else)
+	"""
 	from fuseparts.subbedopts import SubbedOptParse
 	if p is False:
 		def opt(name,**k):
@@ -773,7 +749,7 @@ def opts(server,p=None,usage=None):
 		def rv():
 			return p.parse_args(sys.argv[1:])
 
-	opt("node", dest="node", default="node",
+	opt("node", dest="node", default="default",
 		help="file storage node name [default: %default]")
 	opt("user", dest="username", default=server.user,
 		help="SQL user name [default: %default]")
@@ -791,6 +767,7 @@ def opts(server,p=None,usage=None):
 	return rv()
 
 def main():
+	"""Main program."""
 	if len(sys.argv) < 2 or sys.argv[1] == "help":
 		usage = """
 sqlmount /mountpoint [options ...]
@@ -805,21 +782,32 @@ sqlmount help
 	List generic information for this SQL node.
 	If paths are specified, list the detailed state for that file/dir.
 
+*sqlmount list roots
+	List which roots are known.
+*sqlmount list root NAME
+	List details from the named root.
+*sqlmount add root NAME path SUBDIR
+	Create a new directory hierarchy.
+*sqlmount change root NAME [new NAME]
+	Change this directory hierarchy.
+*sqlmount del root NAME
+	Delete this root.
+
 *sqlmount list nodes
 	List which nodes are known.
 *sqlmount list node NAME
 	List details from the named node.
-*sqlmount add node NAME path STORAGE
+*sqlmount add node NAME root NAME path STORAGE
 	Create a new directory hierarchy for storing in STORAGE.
 *sqlmount change node NAME [new NAME] [path STORAGE]
-	Change this directory hierarchy for storing in STORAGE.
+	Change this directory hierarchy.
 	You need to copy files from the old to the new storage
 	before running this command!
 *sqlmount clone node NAME new NAME path STORAGE
 	Create a copy of an existing directory hierarchy.
 	You'll also need to specify where to copy files from; see below.
 *sqlmount del node NAME
-	Delete this node.
+	Delete this node. Warning: Files may become inaccessible!
 
 *sqlmount list copy
 	List all copying commands.
@@ -848,6 +836,8 @@ sqlmount help  -- list other modes and options
 		opt,arg = opts(server, usage=usage)
 
 		db = Db.Db(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
+		if not hasattr(db,"call_committed"):
+			raise NotImplementedError("Need version 0.1.43 of smurf.Db module")
 		server.init_db(db, opt.node)
 	
 		llfuse.init(server, sys.argv[1], 

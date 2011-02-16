@@ -22,28 +22,55 @@ not commonly found in "standard" file systems.
 
 I want a file system that's replicated across multiple systems,
 some of which are behind slow WAN links. Yet local access needs
-to be fast everywhere.
+to be (reasonably) fast everywhere.
 
 I want a file system that's redundant and that can be reconfigured
 easily, so that I can add a subtree with my banking records and
 decide to have a few more copies stored someplace safe.
 
-I don't want local file caches. I don't need safe concurrent
-write accesses.
+I don't need safe concurrent write accesses.
+
+Local file caches should be possible but not required.
 
 I like to store file metadata in a database instead of modifying
 the original files. That's important for stuff like MP3 tracks.
+
+---------
+Structure
+---------
+
+All file metadata are stored in the database.
+You find your basic inodes there, as well as a directory tree.
+
+Within a database, you may have multiple "root" directories.
+Each of these needs at least one storage node, which specifies
+where the actual file contents are stored. You may run at most
+one sqlmount process per node. Nodes may use shared file storage.
+
+If you have more than one node per root, you should also
+specify copy methods. These allow new files to be transferred
+from A to B automatically, either "soon" or on demand.
+(Of course, updates and deletes are also synchronized.)
+
+-----
+Usage
+-----
+
+	sqlmount --help
 
 -----
 Ideas
 -----
 
-File access strategies can be modified. This enables you to e.g.
-store unmodified MP3 files via sqlmount, except that the ID3v2 metadata
-are pulled transparently from (a local mirror of) the MusicBrainz database.
+Mostly-read-only access: return symlinks to the storage for all
+files, or for all "old" files (define 'old' as an hour or so).
+
+Overlay file reading. This enables you to e.g.  store unmodified
+MP3 files via sqlmount, except that the ID3v2 metadata are pulled
+transparently from (a local mirror of) the MusicBrainz database.
 
 Files might be stored in archives. People who like P2P file sharing
-can thus keep the original file and still access the individual parts.
+can thus keep the original file, and still access the individual parts.
 
 ----
 TODO
