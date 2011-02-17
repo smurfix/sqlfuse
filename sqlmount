@@ -22,6 +22,8 @@ import traceback
 from threading import Lock,Thread,Condition,RLock
 from time import sleep
 from weakref import WeakValueDictionary
+from smurf.heap import Heap
+from time import time
 
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
 
@@ -132,6 +134,8 @@ class Inode(object):
 		self.timestamp = None
 		self.inuse = 0
 		self._delay = 0
+
+		tree.add_cache(self)
 		# defer anything we only need when loaded to after _load is called
 
 	def _load(self):
@@ -280,33 +284,59 @@ for k in inode_attrs:
 del _setprop
 
 
-class BackgroundUpdater(Thread):
+class BackgroundJob(Thread):
 	"""Updating inode information, particularly size+mtime, for each
 	write() call is prohibitive. Therefore, metadata updates are accumulated,
 	and each 0.5sec a background thread wakes up (if necessary) and
 	writes all inode updates to the database.
 	"""
-	def __init__(self,tree):
-		super(BackgroundUpdater,self).__init__()
-		self.tree = tree
+	def __init__(self):
+		super(BackgroundJob,self).__init__()
 		self.lock = Condition()
-		self.state = False
+		self.running = False
+
+	def trigger(self, die=False):
+		"""Tell the worker to do something."""
+		with self.lock:
+			if die:
+				self.running = None
+				self.lock.notify()
+				return
+			if not self.running:
+				self.running = True
+				self.lock.notify()
+
+	def quit(self):
+		"""Tell this piece of code to die."""
+		log_call()
+		self.trigger(True)
+		self.join()
+		self.work()
+
 
 	def run(self):
 		"""Background loop."""
+		delay=0
 		while True:
 			with self.lock:
-				while self.state is False:
-					self.lock.wait()
-				if self.state is None:
-					self._run()
+				while self.running is False:
+					self.lock.wait(delay)
+					if delay is not None: break
+				if self.running is None:
+					self.work()
 					return
-				self.state = False
-			sleep(0.1)
-			self._run()
-			sleep(0.4)
+				self.running = False
+			delay = self.work()
 
-	def _run(self):
+	def work(self):
+		raise NotImplementedError("You need to override %s.work" % (self.__class__.__name__))
+
+class BackgroundUpdater(BackgroundJob):
+	def __init__(self,tree):
+		super(BackgroundUpdater,self).__init__()
+		self.tree = tree
+
+	def work(self):
 		"""Sync all inodes"""
 		with self.tree._update_lock:
 			u = self.tree._update
@@ -314,7 +344,30 @@ class BackgroundUpdater(Thread):
 		for inode in u:
 			inode._save()
 		self.tree.db.commit()
+		sleep(0.5)
+		return None
 				
+class InodeFlusher(BackgroundJob):
+	def __init__(self):
+		super(InodeFlusher,self).__init__()
+		self.inodes = Heap()
+
+	def add(self, inode):
+		if not inode.inum: return
+		with self.lock:
+			self.inodes.push((time(),inode))
+			if len(self.inodes) < 2:
+				self.trigger()
+
+	def work(self):
+		t = time()-10
+		while True:
+			with self.lock:
+				if not self.inodes:
+					return None
+				if self.inodes[0][0] > t:
+					return self.inodes[0][0]-t
+				inode = self.inodes.pop()[1]
 
 class FileOperations(object):
 	"""Operations on open files.
@@ -471,6 +524,8 @@ class SqlFuse(llfuse.Operations):
 		self._update_lock = Lock()
 		self.inode_cache = WeakValueDictionary()
 		self.inode_cache_lock = Lock()
+		self.inode_delay = Heap()
+
 		self.inode_update = set()
 		self.inode_update_lock = Lock()
 
@@ -588,7 +643,6 @@ class SqlFuse(llfuse.Operations):
 		res = llfuse.EntryAttributes()
 		res.st_ino = inode
 		res.st_nlink, = self.db.DoFn("select count(*) from tree where inode=${inode}",inode=inode.inum)
-		print("GET",inode,repr(inode.attrs))
 		for k in inode_attrs:
 			if k.endswith("time"):
 				v = inode[k]
@@ -714,12 +768,20 @@ class SqlFuse(llfuse.Operations):
 
 	def forget(self, inum, nlookup):
 		with lock_released:
-			if inum not in self.inode_cache:
-				print("... Drop Inode","unknown",inum)
+			try:
+				inode = self.inode_cache[inum]
+			except KeyError:
 				return
-			inode = Inode(inum,self)
-			del self.inode_cache[inode]
-			print("... Drop Inode",inode)
+			with inode.lock:
+				del self.inode_cache[inode]
+				inode._save()
+				inode.inum = None
+
+	def add_cache(self,inode):
+		assert self.inode_cache[inode.inum] == inode
+		self.flusher.add(inode)
+		
+		
 
 ## not used, because the 'default_permissions' option is set
 #	def access(self, inode, mode, ctx):
@@ -903,16 +965,7 @@ class SqlFuse(llfuse.Operations):
 	def trigger_add(self, inode):
 		with self.inode_update_lock:
 			self.inode_update.add(self)
-		self.trigger_bg()
-
-	def trigger_bg(self, s=True):
-		"""\
-		Start off the background sync thread.
-		"""
-		with self.syncer.lock:
-			if self.syncer.state is False or s is None:
-				self.syncer.state = s
-				self.syncer.lock.notify()
+		self.syncer.trigger()
 
 	def init(self):
 		"""\
@@ -921,22 +974,25 @@ class SqlFuse(llfuse.Operations):
 		self.syncer = BackgroundUpdater(self)
 		self.syncer.start()
 
+		self.flusher = InodeFlusher()
+		self.flusher.start()
+
 	def destroy(self):
 		"""\
 		Unmounting: tell the background job to stop.
 		"""
-		self.trigger_bg(None) # shutdown updater thread
-		self.syncer.join()
-		pass
+		self.flusher.quit()
+		self.flusher = None
+
+		self.syncer.quit()
+		self.syncer = None
+
+		self.db.commit()
+		self.db = None
 
 	def stacktrace(self):
-		'''Asynchronous debugging
-		
-		This method will be called when the ``fuse_stacktrace`` extended
-		attribute is set on the mountpoint. It will be called without
-		holding the global lock. The default implementation logs the
-		current stack trace of every running Python thread. This can be
-		quite useful to debug file system deadlocks.
+		'''Debugging, triggered when the "fuse_stacktrace" attribute
+		is set on the mountpoint.
 		'''
 
 		import sys
