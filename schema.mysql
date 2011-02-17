@@ -33,6 +33,7 @@ CREATE TABLE `inode` (
   `size` bigint(20) NOT NULL default '0', -- mirrors file size
   `rdev` int(10) NULL,
   `event` bigint(20) unsigned NULL, -- ID of file's latest event record
+  `seq` bigint(20) unsigned not null default '0', -- sequence number
   PRIMARY KEY (`id`),
   UNIQUE KEY `event` (`event`)
 ) DEFAULT CHARSET=binary;
