@@ -10,6 +10,8 @@
 
 from __future__ import division, print_function, absolute_import
 
+DBVERSION = "0.1"
+
 BLOCKSIZE = 4096
 
 import errno, fcntl, os, stat, sys, traceback
@@ -53,6 +55,11 @@ def flag2mode(flags):
 
 	return mode
 
+class Info(object):
+	def __init__(self,tree):
+		for n,v in tree.db.DoSelect("select name,value from `info`"):
+			setattr(self,n,v)
+		
 
 class Inode(object):
 	"""\
@@ -824,6 +831,8 @@ class SqlFuse(llfuse.Operations):
 
 	def xattr_id(self,name):
 		"""xattr name-to-key translation"""
+		if len(name) == 0 or len(name) > self.info.attrnamelen:
+			raise(FUSEError(errno.ENAMETOOLONG))
 		try: return self._xattr_id[name]
 		except KeyError: pass
 
@@ -860,6 +869,8 @@ class SqlFuse(llfuse.Operations):
 
 	def setxattr(self, inum, name, value):
 		with lock_released:
+			if len(value) > self.info.attrlen:
+				raise(FUSEError(errno.E2BIG))
 			nid=self.xattr_id(name)
 			inode = Inode(inum, self)
 			with inode.lock: # protect against insert/insert or update/delete race
@@ -912,6 +923,8 @@ class SqlFuse(llfuse.Operations):
 		"""\
 		Helper to create a new named inode.
 		"""
+		if len(name) == 0 or len(name) > self.tree.info.namelen:
+			raise FUSEError(errno.ENAMETOOLONG)
 		now,now_ns = nowtuple()
 		inum = self.db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev)
 		self.db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=inum_p,name=name)
@@ -1028,6 +1041,10 @@ class SqlFuse(llfuse.Operations):
 			raise RuntimeError("database has not been initialized: inode %d is missing" % (self.inode,))
 		if mode == 0:
 			db.Do("update inode set mode=${dir} where id=${inode}", dir=stat.S_IFDIR|stat.S_IRWXU|stat.S_IRWXG|stat.S_IRWXO, inode=self.inum)
+		
+		self.info = Info(self)
+		if self.info.version != DBVERSION:
+			raise RuntimeError("Need database version %s, got %s" % (DBVERSION,self.info.version))
 
 	def trigger_add(self, inode):
 		with self.inode_update_lock:
