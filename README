@@ -76,5 +76,7 @@ can thus keep the original file, and still access the individual parts.
 TODO
 ----
 
-Indexing by content (file SHA1) should be possible.
+Indexing by content (file SHA1). This means copy-on-write.
+
+Protect against SQL server restarts and timeouts.
 
