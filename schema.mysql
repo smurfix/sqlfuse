@@ -40,6 +40,30 @@ CREATE TABLE `inode` (
 insert into `inode` (`id`,`mode`) values (1,0); -- S_IFDIR, set when first mounting
 
 --
+-- Inodes can have extended attributes.
+-- 
+DROP TABLE IF EXISTS `xattr_name`;
+CREATE TABLE `xattr_name` (
+  `id` int(10) unsigned NOT NULL auto_increment,
+  `name` varchar(255) NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `name` (`name`)
+) DEFAULT CHARSET=utf8;
+
+DROP TABLE IF EXISTS `xattr`;
+CREATE TABLE `xattr` (
+  `id` bigint(20) unsigned NOT NULL auto_increment,
+  `inode` bigint(20) unsigned NOT NULL,
+  `name` int(10) unsigned NOT NULL,
+  `value` BLOB(1024) NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `inode` (`inode`,`name`),
+  UNIQUE KEY `name` (`name`),
+  constraint `fk_xattr_name` foreign key(`name`) references `xattr_name`(`id`) on delete cascade,
+  constraint `fk_xattr_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade
+) DEFAULT CHARSET=utf8;
+
+--
 -- This represents directory entries.
 -- 
 DROP TABLE IF EXISTS `tree`;

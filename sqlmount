@@ -522,6 +522,10 @@ class SqlFuse(llfuse.Operations):
 		self._busy_lock = Lock()
 		self._update = {}
 		self._update_lock = Lock()
+		self._xattr_name = {}
+		self._xattr_id = {}
+		self._xattr_lock = Lock() # protects name/id translation
+
 		self.inode_cache = WeakValueDictionary()
 		self.inode_cache_lock = Lock()
 		self.inode_delay = Heap()
@@ -788,37 +792,100 @@ class SqlFuse(llfuse.Operations):
 #		log_call()
 #		raise FUSEError(errno.EOPNOTSUPP)
 
+
+## xattr. The table uses IDs because they're much shorter than the names.
+
+	#self._xattr_name = {}
+	#self._xattr_id = {}
+	#self._xattr_lock = Lock() # protects name/id translation
+	def xattr_name(self,xid):
+		"""xattr key-to-name translation"""
+		try: return self._xattr_name[xid]
+		except KeyError: pass
+
+		self._xattr_lock.acquire()
+		self.db.call_committed(self._xattr_lock.release)
+		self.db.call_rolledback(self._xattr_lock.release)
+
+		try: return self._xattr_name[xid]
+		except KeyError: pass
+
+		# this had better exist ...
+		name, = self.Db.DoFn("select name from xattr_name where id=${xid}",xid=xid)
+
+		self._xattr_name[xid] = name
+		self._xattr_id[name] = xid
+		def _drop():
+			del self._xattr_name[xid]
+			del self._xattr_id[name]
+		self.db.call_rolledback(_drop)
+
+		return name
+
+	def xattr_id(self,name):
+		"""xattr name-to-key translation"""
+		try: return self._xattr_id[name]
+		except KeyError: pass
+
+		self._xattr_lock.acquire()
+		self.db.call_committed(self._xattr_lock.release)
+		self.db.call_rolledback(self._xattr_lock.release)
+
+		try: return self._xattr_id[name]
+		except KeyError: pass
+
+		try:
+			xid, = self.db.DoFn("select id from xattr_name where name=${name}", name=name)
+		except Db.NoData:
+			xid = self.db.Do("insert into xattr_name(name) values(${name})", name=name)
+
+		self._xattr_name[xid] = name
+		self._xattr_id[name] = xid
+		def _drop():
+			del self._xattr_name[xid]
+			del self._xattr_id[name]
+		self.db.call_rolledback(_drop)
+
+		return xid
+
 	def getxattr(self, inum, name):
 		with lock_released:
-			raise FUSEError(errno.EOPNOTSUPP)
-			val = name.swapcase() + '@' + path
-			if size == 0:
-				# We are asked for size of the value.
-				return len(val)
-			return val
+			nid=self.xattr_id(name)
+			try:
+				val, = self.db.DoFn("select value from xattr where inode=${inode} and name=${name}", inode=inum,name=nid)
+			except Db.NoData:
+				raise(FUSEError(llfuse.ENOATTR))
+			else:
+				return val
 
 	def setxattr(self, inum, name, value):
 		with lock_released:
-			raise FUSEError(errno.EOPNOTSUPP)
-			# TODO
-			return
+			nid=self.xattr_id(name)
+			inode = Inode(inum, self)
+			with inode.lock: # protect against insert/insert or update/delete race
+				try:
+					self.db.Do("update xattr set value=${value} where inode=${inode} and name=${name}", inode=inum,name=nid,value=value)
+				except Db.NoData:
+					self.db.Do("insert into xattr (inode,name,value) values(${inode},${name},${value})", inode=inum,name=nid,value=value)
 
 	def listxattr(self, inum):
 		with lock_released:
-			raise FUSEError(errno.EOPNOTSUPP)
-			# We use the "user" namespace to please XFS utils
-			aa = ["user." + a for a in ("foo", "bar")]
-			if size == 0:
-				# We are asked for size of the attr list, ie. joint size of attrs
-				# plus null separators.
-				return len("".join(aa)) + len(aa)
-			return aa
+			# 
+			try:
+				for nid, in self.db.DoSelect("select name from xattr where inode=${inode}", inode=inum):
+					yield self.xattr_name(nid)
+			except Db.NoData:
+				return
 
 	def removexattr(self, inum, name):
 		with lock_released:
-			raise FUSEError(errno.EOPNOTSUPP)
-			# TODO
-			return
+			nid=self.xattr_id(name)
+			inode = Inode(inum,self)
+			with inode.lock: # protect against insert/insert or update/delete race
+				try:
+					self.db.Do("delete from xattr where inode=${inode} and name=${name}", inode=inum,name=nid)
+				except Db.NoData:
+					raise(FUSEError(llfuse.ENOATTR))
 
 	def statfs(self):
 		"""\
