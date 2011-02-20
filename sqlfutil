@@ -1,0 +1,82 @@
+#!/usr/bin/python -tt
+# -*- coding: utf-8 -*-
+
+#    Copyright (C) 2010  Matthias Urlichs <matthias@urlichs.de>
+#
+#    This program may be distributed under the terms of the GNU GPLv3.
+#
+## This file is formatted with tabs.
+## Do NOT introduce leading spaces.
+
+from __future__ import division, print_function, absolute_import
+
+from sqlmix import Db,NoData
+
+#from sqlfuse import SqlFuse
+from sqlfuse.options import options
+
+def main():
+	"""Main program."""
+	
+#*sqlmount info [--node=NAME] [path...]
+#	List generic information for this SQL node.
+#	If paths are specified, list the detailed state for that file/dir.
+#
+#*sqlmount list root
+#	List which roots are known.
+#*sqlmount list root NAME
+#	List details from the named root.
+#*sqlmount add root NAME path SUBDIR
+#	Create a new directory hierarchy.
+#*sqlmount change root NAME [new NAME]
+#	Change this directory hierarchy.
+#*sqlmount del root NAME
+#	Delete this root.
+#
+#*sqlmount list nodes
+#	List which nodes are known.
+#*sqlmount list node NAME
+#	List details from the named node.
+#*sqlmount add node NAME root NAME path STORAGE
+#	Create a new directory hierarchy for storing in STORAGE.
+#*sqlmount change node NAME [new NAME] [path STORAGE]
+#	Change this directory hierarchy.
+#	You need to copy files from the old to the new storage
+#	before running this command!
+#*sqlmount clone node NAME new NAME path STORAGE
+#	Create a copy of an existing directory hierarchy.
+#	You'll also need to specify where to copy files from; see below.
+#*sqlmount del node NAME
+#	Delete this node. Warning: Files may become inaccessible!
+#
+#*sqlmount list copy
+#	List all copying commands.
+#*sqlmount list copy A B
+#	List details of the copy command which copies stuff from node A to B.
+#*sqlmount add copy A B prio N mode HOW via CMD [ondemand|background]
+#*sqlmount change copy A B [prio N] [mode HOW [via CMD]] [ondemand|background]
+#	Add or change a command to copy stuff from A to B.
+#	If 'ondemand' is specified, this is a caching method.
+#	Otherwise, copying of all files will run in the background.
+#*sqlmount del copy A B
+#	Delete this method to copy files.
+#
+#* These commands are not implemented yet.
+#"""
+	opt=options("mode")
+	print(opt)
+	db = Db(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
+
+	if opt.mode == "info":
+		node_id,root_id = db.DoFn("select id,root from node where name=${name}", name=opt.node)
+		rootname,inum = db.DoFn("select name,inode from root where id=${id}", id=root_id)
+		print("""\
+node %s (%d)
+root %s (%d)
+inode %d
+""" % (opt.node,node_id,rootname,root_id,inum))
+	else:
+		raise NotImplementedError("I don't yet know how to do that.")
+
+if __name__ == '__main__':
+	main()
