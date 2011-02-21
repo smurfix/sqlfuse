@@ -20,6 +20,12 @@ import inspect
 from threading import Lock,Thread,Condition,RLock
 from time import sleep,time
 from weakref import WeakValueDictionary
+
+# For deadlock debugging, I use a modified version of the threading module.
+_Lock=Lock
+_RLock=RLock
+def Lock(name): return _Lock()
+def RLock(name): return _RLock()
 #import threading;threading._VERBOSE = True
 
 import llfuse
@@ -38,10 +44,11 @@ def nowtuple():
 	return (int(now.strftime("%s")),int(now.strftime("%f000")))
 
 
-def log_call():
+def log_call(depth=0):
 	"""Debugging aid"""
-	c=inspect.currentframe(1)
+	c=inspect.currentframe(1+depth)
 	print(">>>",c.f_code.co_name,"@",c.f_lineno,repr(c.f_locals))
+	traceback.print_stack()
 	
 def flag2mode(flags):
 	"""translate OS flag (O_RDONLY) into access mode ("r")."""
@@ -141,8 +148,8 @@ class Inode(object):
 		self.inum = inum
 		self.seq = None
 		self.tree = tree
-		self.lock = RLock()
-		self.writelock = Lock()
+		self.lock = RLock(name="inode<%d>"%inum)
+		self.writelock = Lock(name="w_inode<%d>"%inum)
 		self.attrs = None
 		self.timestamp = None
 		self.inuse = 0
@@ -195,7 +202,7 @@ class Inode(object):
 					return
 				self.attrs[key] = value
 				self.updated.add(key)
-			self.tree.trigger_add(self)
+			self.tree.update_add(self)
 
 	def _save(self):
 		"""Save local attributes"""
@@ -240,7 +247,9 @@ class Inode(object):
 					self.tree.db.Do("update inode set seq=${seq}+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=seq, **args)
 					self.seq = seq+1
 
-			if self.attrs["size"] != self.old_size:
+			else:
+				self.seq += 1
+			if "size" in self.attrs and self.attrs["size"] != self.old_size:
 				def do_size():
 					with self.lock:
 						self.tree.rooter.d_size(self.old_size,self.attrs["size"])
@@ -314,7 +323,7 @@ class BackgroundJob(Thread):
 	"""
 	def __init__(self):
 		super(BackgroundJob,self).__init__()
-		self.lock = Condition()
+		self.lock = Condition(name=self.__class__.__name__)
 		self.running = False
 
 	def trigger(self, die=False):
@@ -431,7 +440,7 @@ class FileOperations(object):
 		so that delete calls get delayed.
 		"""
 		self.inode = inode
-		self.lock = Lock()
+		self.lock = Lock(name="file<%d>"%inode.inum)
 		mode = flag2mode(flags)
 		self.mode = mode[0]
 		self.file = open(inode.tree._file_path(inode),mode)
@@ -563,19 +572,16 @@ class SqlFuse(llfuse.Operations):
 		self._slot = {}
 		self._slot_next = 1
 		self._busy = {}
-		self._busy_lock = Lock()
+		self._busy_lock = Lock(name="busy")
 		self._update = {}
-		self._update_lock = Lock()
+		self._update_lock = Lock(name="update")
 		self._xattr_name = {}
 		self._xattr_id = {}
-		self._xattr_lock = Lock() # protects name/id translation
+		self._xattr_lock = RLock(name="xattr") # protects name/id translation
 
 		self.inode_cache = WeakValueDictionary()
-		self.inode_cache_lock = Lock()
+		self.inode_cache_lock = Lock(name="inode_cache")
 		self.inode_delay = Heap()
-
-		self.inode_update = set()
-		self.inode_update_lock = Lock()
 
 
 # map fdnum ⇒ filehandle
@@ -820,6 +826,7 @@ class SqlFuse(llfuse.Operations):
 	#self._xattr_name = {}
 	#self._xattr_id = {}
 	#self._xattr_lock = Lock() # protects name/id translation
+
 	def xattr_name(self,xid):
 		"""xattr key-to-name translation"""
 		try: return self._xattr_name[xid]
@@ -890,13 +897,12 @@ class SqlFuse(llfuse.Operations):
 			inode = Inode(inum, self)
 			with inode.lock: # protect against insert/insert or update/delete race
 				try:
-					self.db.Do("update xattr set value=${value} where inode=${inode} and name=${name}", inode=inum,name=nid,value=value)
+					self.db.Do("update xattr set value=${value},seq=seq+1 where inode=${inode} and name=${name}", inode=inum,name=nid,value=value)
 				except NoData:
-					self.db.Do("insert into xattr (inode,name,value) values(${inode},${name},${value})", inode=inum,name=nid,value=value)
+					self.db.Do("insert into xattr (inode,name,value,seq) values(${inode},${name},${value},1)", inode=inum,name=nid,value=value)
 
 	def listxattr(self, inum):
 		with lock_released:
-			# 
 			try:
 				for nid, in self.db.DoSelect("select name from xattr where inode=${inode}", inode=inum):
 					yield self.xattr_name(nid)
@@ -1061,9 +1067,8 @@ class SqlFuse(llfuse.Operations):
 		if self.info.version != DBVERSION:
 			raise RuntimeError("Need database version %s, got %s" % (DBVERSION,self.info.version))
 
-	def trigger_add(self, inode):
-		with self.inode_update_lock:
-			self.inode_update.add(self)
+	def update_add(self, inode):
+		self._update.add(inode)
 		self.syncer.trigger()
 
 	def init(self):

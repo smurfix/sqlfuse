@@ -66,11 +66,12 @@ CREATE TABLE `xattr` (
   `id` bigint(20) unsigned NOT NULL auto_increment,
   `inode` bigint(20) unsigned NOT NULL,
   `name` int(10) unsigned NOT NULL,
+  `seq` int(10) unsigned NOT NULL,
   `value` BLOB(1024) NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `inode` (`inode`,`name`),
-  UNIQUE KEY `name` (`name`),
-  constraint `fk_xattr_name` foreign key(`name`) references `xattr_name`(`id`) on delete cascade,
+  KEY `name` (`name`),
+  constraint `fk_xattr_name` foreign key(`name`) references `xattr_name`(`id`) on delete restrict,
   constraint `fk_xattr_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade
 ) DEFAULT CHARSET=utf8;
 insert into info(name,value) values('attrlen','1024');
