@@ -339,7 +339,6 @@ class BackgroundJob(Thread):
 
 	def quit(self):
 		"""Tell this piece of code to die."""
-		log_call()
 		self.trigger(True)
 		self.join()
 		self.work()
