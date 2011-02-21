@@ -382,11 +382,17 @@ class RootUpdater(BackgroundJob):
 		super(RootUpdater,self).__init__()
 		self.tree = tree
 		self.delta_inode = 0
+		self.delta_dir = 0
 		self.delta_block = 0
 
 	def d_inode(self,delta):
 		with self.lock:
 			self.delta_inode += delta
+			self.trigger()
+
+	def d_dir(self,delta):
+		with self.lock:
+			self.delta_dir += delta
 			self.trigger()
 
 	def d_size(self,old,new):
@@ -401,9 +407,10 @@ class RootUpdater(BackgroundJob):
 		"""Sync root data"""
 		with self.lock:
 			d_inode = self.delta_inode; self.delta_inode = 0
+			d_dir = self.delta_dir; self.delta_dir = 0
 			d_block = self.delta_block; self.delta_block = 0
-		if d_inode or d_block:
-			self.tree.db.Do("update root set nfiles=nfiles+${inodes}, nblocks=nblocks+${blocks}", root=self.tree.root_id, inodes=d_inode, blocks=d_block)
+		if d_inode or d_block or d_dir:
+			self.tree.db.Do("update root set nfiles=nfiles+${inodes}, nblocks=nblocks+${blocks}, ndirs=ndirs+${dirs}", root=self.tree.root_id, inodes=d_inode, blocks=d_block, dirs=d_dir)
 			self.tree.db.commit()
 		sleep(0.5)
 		return None
@@ -750,6 +757,7 @@ class SqlFuse(llfuse.Operations):
 			cnt, = self.db.DoFn("select count(*) from tree where parent=${inode}", inode=inode.inum)
 			if cnt:
 				raise FUSEError(errno.ENOTEMPTY)
+			self.db.call_committed(self.rooter.d_dir,-1)
 			self._remove(inode)
 
 	def _remove(self,inum):
@@ -789,6 +797,7 @@ class SqlFuse(llfuse.Operations):
 	def mkdir(self, inum_p, name, mode, ctx):
 		with lock_released:
 			inum = self._new_inode(inum_p,name,(mode&0o7777)|stat.S_IFDIR,ctx)
+			self.db.call_committed(self.rooter.d_dir,1)
 			return self._getattr(inum)
 
 ## not supported by llfuse

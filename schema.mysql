@@ -102,7 +102,8 @@ CREATE TABLE `root` (
   `name` varchar(255) NOT NULL,
   `uptodate` bigint(20) unsigned NOT NULL DEFAULT '0',
 -- statistics
-  `nfiles` bigint(20) unsigned not null default '0',
+  `nfiles` bigint(20) unsigned not null default '1',
+  `ndirs` bigint(20) unsigned not null default '1',
   `nblocks` bigint(20) unsigned not null default '0',
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
