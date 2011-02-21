@@ -20,6 +20,7 @@ import inspect
 from threading import Lock,Thread,Condition,RLock
 from time import sleep,time
 from weakref import WeakValueDictionary
+#import threading;threading._VERBOSE = True
 
 import llfuse
 from llfuse import FUSEError,lock_released
@@ -70,6 +71,7 @@ class Inode(object):
 		'inum',          # inode number
 		'seq',           # database update tracking
 		'attrs',         # dictionary of current attributes (size etc.)
+		'old_size',      # inode size, as stored in the database
 		'updated',       # set of attributes not yet written to disk
 		'seq',           # change sequence# on-disk
 		'timestamp',     # time the attributes have been read from disk
@@ -105,8 +107,11 @@ class Inode(object):
 	def __eq__(self,other):
 		if id(self)==id(other):
 			return True
-		if self.inum and other.inum and self.inum == other.inum:
-			raise RuntimeError("two inodes have the same ID")
+		if isinstance(other,Inode):
+			if self.inum and other and self.inum == other:
+				raise RuntimeError("two inodes have the same ID")
+		elif self.inum == other:
+			return True
 		return False
 
 	def __ne__(self,other):
@@ -170,8 +175,9 @@ class Inode(object):
 				else:
 					v = d[k]
 				self.attrs[k] = v
-				self.seq = d["seq"]
-				self.timestamp = nowtuple()
+			self.seq = d["seq"]
+			self.old_size = d["size"]
+			self.timestamp = nowtuple()
 	
 	def __getitem__(self,key):
 		if not self.seq: self._load()
@@ -201,6 +207,7 @@ class Inode(object):
 		self.lock.acquire()
 		try:
 			if not self.updated:
+				self.lock.release()
 				return
 			args = {}
 			for f in self.updated:
@@ -222,7 +229,7 @@ class Inode(object):
 				self.tree.db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=self.seq, **args)
 			except NoData:
 				try:
-					seq, = self.tree.db.DoFn("select seq from inode where id=${inode}", inode=self.inum)
+					seq,self.old_size = self.tree.db.DoFn("select seq,size from inode where id=${inode}", inode=self.inum)
 				except NoData:
 					# deleted inode
 					print("!!! inode_deleted",self.inum,self.seq,self.updated)
@@ -232,6 +239,13 @@ class Inode(object):
 					print("!!! inode_changed",self.inum,self.seq,seq,repr(args))
 					self.tree.db.Do("update inode set seq=${seq}+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=seq, **args)
 					self.seq = seq+1
+
+			if self.attrs["size"] != self.old_size:
+				def do_size():
+					with self.lock:
+						self.tree.rooter.d_size(self.old_size,self.attrs["size"])
+						self.old_size = self.attrs["size"]
+				self.tree.db.call_committed(do_size)
 
 # busy-inode flag
 	def set_inuse(self):
@@ -276,7 +290,7 @@ class Inode(object):
 		self._delay = 0
 		self._save()
 		
-	def clr_delay(self):
+	def del_delay(self):
 		self._delay = 0
 		self.tree._forget(self)
 		self.inum = None
@@ -354,7 +368,38 @@ class BackgroundUpdater(BackgroundJob):
 		self.tree.db.commit()
 		sleep(0.5)
 		return None
-				
+
+class RootUpdater(BackgroundJob):
+	def __init__(self,tree):
+		super(RootUpdater,self).__init__()
+		self.tree = tree
+		self.delta_inode = 0
+		self.delta_block = 0
+
+	def d_inode(self,delta):
+		with self.lock:
+			self.delta_inode += delta
+			self.trigger()
+
+	def d_size(self,old,new):
+		old = (old+BLOCKSIZE-1)//BLOCKSIZE
+		new = (new+BLOCKSIZE-1)//BLOCKSIZE
+		if old == new: return
+		with self.lock:
+			self.delta_block += new-old
+			self.trigger()
+
+	def work(self):
+		"""Sync root data"""
+		with self.lock:
+			d_inode = self.delta_inode; self.delta_inode = 0
+			d_block = self.delta_block; self.delta_block = 0
+		if d_inode or d_block:
+			self.tree.db.Do("update root set nfiles=nfiles+${inodes}, nblocks=nblocks+${blocks}", root=self.tree.root_id, inodes=d_inode, blocks=d_block)
+			self.tree.db.commit()
+		sleep(0.5)
+		return None
+
 class InodeFlusher(BackgroundJob):
 	def __init__(self):
 		super(InodeFlusher,self).__init__()
@@ -390,7 +435,6 @@ class FileOperations(object):
 		mode = flag2mode(flags)
 		self.mode = mode[0]
 		self.file = open(inode.tree._file_path(inode),mode)
-		self.size = os.fstat(self.file.fileno()).st_size
 		inode.set_inuse()
 
 	def read(self, length,offset):
@@ -408,11 +452,11 @@ class FileOperations(object):
 			self.file.write(buf)
 			
 			end = offset+len(buf)
-			if self.size < end:
-				self.size = end
-				self.inode.size = end
 			self.inode.mtime = nowtuple()
-			return len(buf)
+		with self.inode.lock:
+			if self.inode.size < end:
+				self.inode.size = end
+		return len(buf)
 
 	def release(self):
 		"""The last process closes the file."""
@@ -551,28 +595,6 @@ class SqlFuse(llfuse.Operations):
 		del self._slot[x]
 		return res
 
-	def _inode_update1(self, inode, data):
-		a = []
-		b = {}
-		for f,v in data.items():
-			a.append(f)
-			if f.endswith("time"):
-				b[f]=v[0]
-				b[f+"ns"]=v[1]
-			else:
-				b[f]=v
-		if "size" in data:
-			with self._update_lock:
-				sfilesize, = self.db.DoFn("select size from inode where id=${inode}", inode=inode.inum)
-				size = (data["size"]+BLOCKSIZE-1)//BLOCKSIZE
-				nsz = data["size"]
-				nsz = (nsz+BLOCKSIZE-1)//BLOCKSIZE
-				if nsz != size:
-					self.db.Do("update root set nblocks=nblocks+${szd} where id=${root}", root=self.root_id,szd=nsz-size, _empty=1)
-				
-		self.db.Do("update inode set "+(", ".join(("%s=${%s}"%(x,x) for x in a)))+" where id=${inode}", inode=inode.inum,**b)
-		
-
 	def _file_path(self, inode):
 		fp = []
 		CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -629,7 +651,8 @@ class SqlFuse(llfuse.Operations):
 		with lock_released:
 			return self._getattr(self._lookup(inum_p,name))
 
-	def handle_exc(self,fn,exc):
+	def handle_exc(*a,**k): #self,fn,exc):
+		log_call()
 		traceback.print_exc()
 		self.db.rollback()
 
@@ -710,7 +733,7 @@ class SqlFuse(llfuse.Operations):
 			mode, = self.db.DoFn("select mode from inode where id=${inode}", inode=inode.inum)
 			if stat.S_ISDIR(mode):
 				raise FUSEError(errno.EISDIR)
-			if not self.defer_delete(inode):
+			if not inode.defer_delete():
 				self._remove(inode)
 
 	def rmdir(self, inum_p, name):
@@ -734,9 +757,8 @@ class SqlFuse(llfuse.Operations):
 		mode,size = self.db.DoFn("select mode,size from inode where id=${inode}", inode=inode.inum)
 		self.db.Do("delete from tree where inode=${inode}", inode=inode.inum)
 		self.db.Do("delete from inode where id=${inode}", inode=inode.inum)
-		size = (size+BLOCKSIZE-1)//BLOCKSIZE
-		self.db.Do("update root set nfiles=nfiles-1 where id=${root} and nfiles>0", root=self.root_id, _empty=1)
-		self.db.Do("update root set nblocks=nblocks-${size} where id=${root} and nblocks>0", root=self.root_id,size=size, _empty=1)
+		self.db.call_committed(self.rooter.d_inode,-1)
+		self.db.call_committed(self.rooter.d_size,size,0)
 
 	def symlink(self, inum_p, name, target, ctx):
 		with lock_released:
@@ -916,13 +938,13 @@ class SqlFuse(llfuse.Operations):
 		"""\
 		Helper to create a new named inode.
 		"""
-		if len(name) == 0 or len(name) > self.tree.info.namelen:
+		if len(name) == 0 or len(name) > self.info.namelen:
 			raise FUSEError(errno.ENAMETOOLONG)
 		now,now_ns = nowtuple()
 		inum = self.db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev)
 		self.db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=inum_p,name=name)
 		
-		self.db.Do("update root set nfiles=nfiles+1 where id=${root}", root=self.root_id, _empty=1)
+		self.db.call_committed(self.rooter.d_inode,1)
 		inode = Inode(inum,self)
 		inode.set_delay()
 		return inode
@@ -940,14 +962,14 @@ class SqlFuse(llfuse.Operations):
 			try:
 				inum, = self.db.DoFn("select inode from tree where parent=${par} and name=${name}", par=inum_p,name=name)
 			except NoData:
-				inode = self._new_inode(par,name,mode|stat.S_IFREG,ctx)
+				inode = self._new_inode(inum_p,name,mode|stat.S_IFREG,ctx)
 			else:
 				if flags & os.O_EXCL:
 					raise FUSEError(errno.EEXIST)
 				inode = Inode(inum,self)
 
 			res = FileOperations(inode, os.O_RDWR|os.O_CREAT)
-			return (self.new_slot(res),self.getattr(inode))
+			return (self.new_slot(res),self._getattr(inode))
 
 	def read(self, fh,off,size):
 		"""Delegated to the file object."""
@@ -1054,6 +1076,9 @@ class SqlFuse(llfuse.Operations):
 		self.flusher = InodeFlusher()
 		self.flusher.start()
 
+		self.rooter = RootUpdater(self)
+		self.rooter.start()
+
 	def destroy(self):
 		"""\
 		Unmounting: tell the background job to stop.
@@ -1063,6 +1088,9 @@ class SqlFuse(llfuse.Operations):
 
 		self.syncer.quit()
 		self.syncer = None
+
+		self.rooter.quit()
+		self.rooter = None
 
 		self.db.commit()
 		self.db = None
