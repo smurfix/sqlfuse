@@ -18,7 +18,7 @@ Rationale
 ---------
 
 For my own use, I want a file system with a bunch of properties
-not commonly found in "standard" file systems.
+not commonly found in "standard" distributed file systems.
 
 I want a file system that's replicated across multiple systems,
 some of which are behind slow WAN links. Yet local access needs
@@ -28,7 +28,8 @@ I want a file system that's redundant and that can be reconfigured
 easily, so that I can add a subtree with my banking records and
 decide to have a few more copies stored someplace safe.
 
-I don't need safe concurrent write accesses.
+I don't need safe concurrent write accesses, but it should be
+possible to arrange for that.
 
 Local file caches should be possible but not required.
 
@@ -57,13 +58,23 @@ Usage
 -----
 
 	sqlmount --help
+	sqlfutil --help
+
+----
+Bugs
+----
+
+Directory mtimes are not updated.
+
+A basic file system works, but nothing else is implemented;
+the SQL table structure _will_ change.
 
 -----
 Ideas
 -----
 
 Mostly-read-only access: return symlinks to the storage for all
-files, or for all "old" files (define 'old' as an hour or so).
+files, or for all "old" files (define 'old').
 
 Overlay file reading. This enables you to e.g.  store unmodified
 MP3 files via sqlmount, except that the ID3v2 metadata are pulled
