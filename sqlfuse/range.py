@@ -46,14 +46,15 @@ class Range(list):
 
 	def decode(self,s,T=T,NT=NT):
 		"""\
-		Add the 
+		Add the range encoded in `s` to the current range.
+		This is the inverse of the 'encode' method.
 		"""
 		a=None
 		b=0
 		mult=1
 		off=0
 		if len(self): # since there are existing entries, go slow
-			def add(a,b): self.add(a,b)
+			add = self.add
 		else: # faster, since input is serial
 			def add(a,b): self.append((a,b))
 
