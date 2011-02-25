@@ -136,11 +136,24 @@ def options(mode=None,args=None):
 		Blistnode = Blist.add_parser("node",help="directory access point")
 		Blistnode.set_defaults(mode2="node")
 		Blistnode.add_argument("name",nargs='?', help="Node name (default: list all nodes)")
-		Blistnode.add_argument("--root", help="limit to this root (default: list all roots' nodes)")
+		Blistnode.add_argument("--root", dest="root", help="limit to this root (default: list all roots' nodes)")
 
 		Blistroot = Blist.add_parser("root",help="hierarchy root")
 		Blistroot.set_defaults(mode2="root")
 		Blistroot.add_argument("name",nargs='?', help="Root name (default: list all roots)")
+
+		Blistinode = Blist.add_parser("inode",help="one file")
+		Blistinode.set_defaults(mode2="inode")
+		Blistinode.add_argument("inum", type=int, help="Inode number")
+
+		Blistevent = Blist.add_parser("event",help="one file")
+		Blistevent.set_defaults(mode2="event")
+		Blistevent.add_argument("event_id", type=int, help="Event number")
+
+		Blistdir = Blist.add_parser("dir",help="list directory")
+		Blistdir.set_defaults(mode2="dir")
+		Blistdir.add_argument("root", type=int, help="root to search from")
+		Blistdir.add_argument("path", type=str, help="file path to walk")
 
 	res = p.parse_args()
 	if res.inifile:

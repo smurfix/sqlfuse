@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.1');
+insert into info(name,value) values('version','0.2');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -37,9 +37,9 @@ CREATE TABLE `inode` (
   `mode` int(11) NOT NULL default '0',
   `uid` int(10) unsigned NOT NULL default '0',
   `gid` int(10) unsigned NOT NULL default '0',
-  `atime` int(10) NOT NULL default '0',
-  `mtime` int(10) NOT NULL default '0',
-  `ctime` int(10) NOT NULL default '0',
+  `atime` bigint(15) NOT NULL default '0',
+  `mtime` bigint(15) NOT NULL default '0',
+  `ctime` bigint(15) NOT NULL default '0',
   `atime_ns` int(10) unsigned NOT NULL default '0',
   `mtime_ns` int(10) unsigned NOT NULL default '0',
   `ctime_ns` int(10) unsigned NOT NULL default '0',
@@ -74,7 +74,7 @@ CREATE TABLE `xattr` (
   `inode` bigint(20) unsigned NOT NULL,
   `name` int(10) unsigned NOT NULL,
   `seq` int(10) unsigned NOT NULL,
-  `value` BLOB(1024) NOT NULL,
+  `value` varbinary(1024) NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `inode` (`inode`,`name`),
   KEY `name` (`name`),
@@ -89,15 +89,13 @@ insert into info(name,value) values('attrlen','1024');
 DROP TABLE IF EXISTS `tree`;
 CREATE TABLE `tree` (
   `inode` bigint(20) unsigned NOT NULL,
-  `parent` bigint(20) unsigned NULL default NULL,
+  `parent` bigint(20) unsigned not NULL,
   `name` varchar(255) NOT NULL,
   KEY `inode` (`inode`),
   UNIQUE KEY `name` (`parent`,`name`),
-  constraint `fk_tree_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade
+  constraint `fk_tree_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade,
+  constraint `fk_tree_parent` foreign key(`parent`) references `inode`(`id`) on delete restrict
 ) DEFAULT CHARSET=utf8;
-alter table `tree` add constraint `fk_tree_parent` foreign key(`parent`) references `tree`(`inode`);
-insert into `tree` (`inode`,`parent`,`name`) values (1,1,"");
-alter table `tree` change `parent` `parent` bigint(20) unsigned NOT NULL;
 insert into info(name,value) values('namelen','255');
 
 -- 
@@ -132,7 +130,7 @@ CREATE TABLE `node` (
   `id` int(10) unsigned NOT NULL auto_increment,
   `root` int(10) unsigned NOT NULL, -- my root
   `name` varchar(255) NOT NULL,
-  `files` text(1024) NOT NULL, -- local file system path
+  `files` varchar(1024) NOT NULL, -- local file system path
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
   constraint `fk_node_root` foreign key(`root`) references `root`(`id`) on delete cascade
@@ -150,15 +148,17 @@ CREATE TABLE `event` (
   `inode` bigint(20) unsigned NOT NULL,
   `node` int(10) unsigned NOT NULL,
   `typ` char(1) NOT NULL, -- 'n'ew 'c'hange 'f'inish_write 'd'elete 'i'nit_node
-  `range` varchar(1023) NULL, -- for change records: what was witten?
+  `range` varbinary(1023) NULL, -- for change records: what was witten?
   PRIMARY KEY (`id`),
+  KEY `fk_event_node` (`node`),
+  KEY `fk_event_inode` (`inode`),
   constraint `fk_event_inode` foreign key(`inode`) references `inode`(`id`) on delete restrict,
-  constraint `fk_event_node` foreign key(`node`) references `node`(`id`) on delete restrict,
-) DEFAULT CHARSET=utf8;
+  constraint `fk_event_node` foreign key(`node`) references `node`(`id`) on delete restrict
+) DEFAULT CHARSET=binary;
+insert into info(name,value) values('rangelen','1023');
 alter table `inode` add constraint `fk_inode_event` foreign key(`event`) references `event`(`id`) on delete restrict;
 
 insert into `event` (`id`,`inode`,`node`,`typ`) values (1,1,1,'i');
-alter table `node` add constraint `fk_node_event` foreign key(`event`) references `event`(`id`) on delete restrict;
 
 -- 
 -- Collect which event from which node has been processed completely
@@ -173,6 +173,10 @@ CREATE TABLE `uptodate` (
   `src` int(10) unsigned NOT NULL, -- the node generating the event
   `dest` int(10) unsigned NOT NULL, -- the node processing the event
   `event` bigint(20) unsigned NOT NULL, -- last that's been processed here
+  PRIMARY KEY (`id`),
+  KEY `fk_uptodate_event` (`event`),
+  KEY `fk_uptodate_dest` (`dest`),
+  KEY `fk_uptodate_src` (`src`),
   constraint `fk_uptodate_src` foreign key(`src`) references `node`(`id`) on delete cascade,
   constraint `fk_uptodate_dest` foreign key(`dest`) references `node`(`id`) on delete cascade,
   constraint `fk_uptodate_event` foreign key(`event`) references `event`(`id`) on delete cascade
@@ -181,8 +185,8 @@ CREATE TABLE `uptodate` (
 -- 
 -- How to do updates
 -- 
-DROP TABLE IF EXISTS `done`;
-CREATE TABLE `done` (
+DROP TABLE IF EXISTS `updater`;
+CREATE TABLE `updater` (
   `id` int(10) unsigned NOT NULL,
   `src` int(10) unsigned NOT NULL, -- the node I'm copying from
   `dest` int(10) unsigned NOT NULL, -- my ID
@@ -191,8 +195,10 @@ CREATE TABLE `done` (
   `source` varchar(1024) not null, -- some class-specific parameters
   `autocopy` bool not null default true, -- if false, only copy on demand
   PRIMARY KEY (`id`),
+  KEY `fk_updater_dest` (`dest`),
+  KEY `fk_updater_src` (`src`),
   constraint `fk_updater_src` foreign key(`src`) references `node`(`id`) on delete cascade,
-  constraint `fk_updater_dest` foreign key(`dest`) references `node`(`id`) on delete cascade,
+  constraint `fk_updater_dest` foreign key(`dest`) references `node`(`id`) on delete cascade
   ) DEFAULT CHARSET=utf8;
 
 -- 
@@ -205,6 +211,9 @@ CREATE TABLE `done` (
   `dest` int(10) unsigned NOT NULL, -- my ID
   `event` bigint(20) unsigned NOT NULL, -- if NULL, no auto-copy will happen
   PRIMARY KEY (`id`),
+  KEY `fk_done_event` (`event`),
+  KEY `fk_done_dest` (`dest`),
+  KEY `fk_done_src` (`src`),
   constraint `fk_done_src` foreign key(`src`) references `node`(`id`) on delete cascade,
   constraint `fk_done_dest` foreign key(`dest`) references `node`(`id`) on delete cascade,
   constraint `fk_done_event` foreign key(`event`) references `event`(`id`) on delete restrict

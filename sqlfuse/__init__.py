@@ -11,7 +11,7 @@ from __future__ import division, print_function, absolute_import
 
 __all__ = ["SqlFuse"]
 
-DBVERSION = "0.1"
+DBVERSION = "0.2"
 
 BLOCKSIZE = 4096
 
@@ -20,6 +20,7 @@ import inspect
 from threading import Lock,Thread,Condition,RLock
 from time import sleep,time
 from weakref import WeakValueDictionary
+from sqlfuse.range import Range
 
 # For deadlock debugging, I use a modified version of the threading module.
 _Lock=Lock
@@ -85,6 +86,7 @@ class Inode(object):
 		'tree',          # Operations object
 		'lock',          # Lock for save vs. update
 		'writelock',     # Lock for concurrent save
+		'changes',       # Range of bytes written (but not saved in a change record)
 		'inuse',         # open files on this inode? <0:delete after close
 		'_delay',        # defer updates (required for creation, which needs to be committed first)
 		'__weakref__',   # required for the inode cache
@@ -153,6 +155,7 @@ class Inode(object):
 		self.attrs = None
 		self.timestamp = None
 		self.inuse = 0
+		self.changes = Range()
 		self._delay = 0
 
 		tree.add_cache(self)
@@ -208,12 +211,13 @@ class Inode(object):
 		"""Save local attributes"""
 		if not self.inum: return
 		if self._delay: return
+		ch = None
 
 		# no "with" statement here: after collecting attrs, we need
 		# to grab the writelock before releasing the inode lock
 		self.lock.acquire()
 		try:
-			if not self.updated:
+			if not self.updated and not self.changes:
 				self.lock.release()
 				return
 			args = {}
@@ -229,32 +233,40 @@ class Inode(object):
 			self.lock.release()
 			raise
 
+		if self.changes:
+			ch = self.changes.encode()
+			self.changes = Range()
+		else:
+			ch = None
 		with self.writelock:
 			self.lock.release()
 
-			try:
-				self.tree.db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=self.seq, **args)
-			except NoData:
+			if args:
 				try:
-					seq,self.old_size = self.tree.db.DoFn("select seq,size from inode where id=${inode}", inode=self.inum)
+					self.tree.db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=self.seq, **args)
 				except NoData:
-					# deleted inode
-					print("!!! inode_deleted",self.inum,self.seq,self.updated)
-					self.inum = None
+					try:
+						seq,self.old_size = self.tree.db.DoFn("select seq,size from inode where id=${inode}", inode=self.inum)
+					except NoData:
+						# deleted inode
+						print("!!! inode_deleted",self.inum,self.seq,self.updated)
+						self.inum = None
+					else:
+						# warn
+						print("!!! inode_changed",self.inum,self.seq,seq,repr(args))
+						self.tree.db.Do("update inode set seq=${seq}+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=seq, **args)
+						self.seq = seq+1
+	
 				else:
-					# warn
-					print("!!! inode_changed",self.inum,self.seq,seq,repr(args))
-					self.tree.db.Do("update inode set seq=${seq}+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=seq, **args)
-					self.seq = seq+1
-
-			else:
-				self.seq += 1
-			if "size" in self.attrs and self.attrs["size"] != self.old_size:
-				def do_size():
-					with self.lock:
-						self.tree.rooter.d_size(self.old_size,self.attrs["size"])
-						self.old_size = self.attrs["size"]
-				self.tree.db.call_committed(do_size)
+					self.seq += 1
+				if "size" in self.attrs and self.attrs["size"] != self.old_size:
+					def do_size():
+						with self.lock:
+							self.tree.rooter.d_size(self.old_size,self.attrs["size"])
+							self.old_size = self.attrs["size"]
+					self.tree.db.call_committed(do_size)
+			if ch:
+				self.tree.db.Do("insert into event(inode,node,typ,`range`) values(${inode},${node},'c',${range})", inode=self.inum,range=ch,node=self.tree.node_id)
 
 # busy-inode flag
 	def set_inuse(self):
@@ -471,6 +483,7 @@ class FileOperations(object):
 		with self.inode.lock:
 			if self.inode.size < end:
 				self.inode.size = end
+			self.inode.changes.add(offset,end)
 		return len(buf)
 
 	def release(self):

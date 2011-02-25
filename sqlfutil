@@ -14,6 +14,113 @@ from sqlmix import Db,NoData
 
 #from sqlfuse import SqlFuse
 from sqlfuse.options import options
+from sqlfuse.range import Range
+from datetime import datetime,timedelta
+
+typ = {
+	"n":"new",
+	"c":"write",
+	"f":"finish",
+	"d":"delete",
+	"i":"init",
+	}
+def report(seq):
+	for k in seq:
+		print(" ".join((unicode(x) for x in k)))
+	print("")
+
+def format_time(s,ns):
+	if not s:
+		v = "epoch"
+	else:
+		v = datetime.utcfromtimestamp(s)
+		if ns:
+			v += timedelta(0,0,ns//1000)
+			v = v.strftime("%F %T.%f")
+		else:
+			v = v.strftime("%F %T")
+	return v
+
+def node_info(db,node_id):
+	yield ("node","ID",node_id)
+	d = db.DoFn("select * from node where id=${id}",id=node_id, _dict=1)
+	for f in "root name files".split():
+		yield (f,d[f])
+	for ch,ta,tb,t in db.DoSelect("select count(*),min(id),max(id),typ from event where node=${node} group by typ", node=node_id):
+		yield ("nchanges",typ[t],ch)
+		yield ("change","first",ta)
+		yield ("change","last",tb)
+
+def root_info(db,root_id):
+	yield ("root","ID",root_id)
+	d = db.DoFn("select * from root where id=${id}",id=root_id, _dict=1)
+	for f in "name inode nfiles ndirs nblocks".split():
+		yield (f,d[f])
+	n, = db.DoFn("select count(*) from node where root=${root}",root=root_id)
+	yield ("nnodes",n)
+
+def inode_info(db,inum):
+	yield ("inode","ID",inum)
+	d = db.DoFn("select * from inode where id=${id}",id=inum, _dict=1)
+	for f in "uid gid mtime atime ctime size event copies seq".split():
+		v = d[f]
+		if f.endswith("time"):
+			v = format_time(v,d[f+"_ns"])
+		yield (f,v)
+	n, = db.DoFn("select count(*) from tree where inode=${inode}",inode=inum)
+	yield ("nlinks",n)
+	for k,v in db.DoSelect("select xattr_name.name, xattr.value from xattr,xattr_name where xattr.inode=${inode} and xattr.name=xattr_name.id", inode=inum, _empty=1):
+		yield ("attr",k,repr(v))
+	
+	try:
+		def get_path(inum,prev=""):
+			try:
+				inum_p,name = db.DoFn("select parent,name from tree where inode=${inode}",inode=inum)
+			except NoData:
+				return prev,inum
+			else:
+				return get_path(inum_p,name+"/"+prev)
+
+
+		for p,n in db.DoSelect("select parent,name from tree where inode=${inode}",inode=inum):
+			path,root_inum = get_path(p,n)
+			root,=db.DoFn("select name from root where inode=${root}",root=root_inum)
+			yield("path",root,path)
+	except NoData:
+		root,=db.DoFn("select name from root where inode=${root}",root=inum)
+		yield("path",root,"/")
+
+def event_info(db,event_id):
+	yield ("event","ID",event_id)
+	d = db.DoFn("select * from event where id=${id}",id=event_id, _dict=1)
+	yield("typ",typ[d["typ"]])
+	for f in "inode node".split():
+		yield(f,d[f])
+	r = d["range"]
+	if r:
+		r = Range(r)
+		yield("range",str(r))
+
+	try: nid, = db.DoFn("select max(id) from event where inode=${inode} and id<${id}", inode=d["inode"],id=event_id)
+	except NoData: pass
+	else:
+		if nid: yield ("prev","inode","event",nid)
+
+	try: nid, = db.DoFn("select min(id) from event where inode=${inode} and id>${id}", inode=d["inode"],id=event_id)
+	except NoData: pass
+	else:
+		if nid: yield ("next","inode","event",nid)
+
+	try: nid, = db.DoFn("select max(id) from event where node=${node} and id<${id}", node=d["node"],id=event_id)
+	except NoData: pass
+	else:
+		if nid: yield ("prev","node","event",nid)
+
+	try: nid, = db.DoFn("select min(id) from event where node=${node} and id>${id}", node=d["node"],id=event_id)
+	except NoData: pass
+	else:
+		if nid: yield ("next","node","event",nid)
+
 
 def main():
 	"""Main program."""
@@ -69,12 +176,40 @@ def main():
 
 	if opt.mode == "info":
 		node_id,root_id = db.DoFn("select id,root from node where name=${name}", name=opt.node)
-		rootname,inum = db.DoFn("select name,inode from root where id=${id}", id=root_id)
-		print("""\
-node %s (%d)
-root %s (%d)
-inode %d
-""" % (opt.node,node_id,rootname,root_id,inum))
+		report(node_info(db,node_id))
+		report(root_info(db,root_id))
+
+		#inum, = db.DoFn("select inode from root where id=${id}", id=root_id)
+		#report(inode_info(db,inum))
+	elif opt.mode == "list":
+		if opt.mode2 == "node":
+			if opt.name: # single node
+				try:
+					id,=db.DoFn("select id from node where name=${name}",name=opt.name)
+				except NoData:
+					raise # TODO reasonable error message
+				else:
+					report(node_info(db,id))
+			else: # list
+				if opt.root:
+					for name, in db.DoSelect("select node.name from node,root where root.name=${root} and node.root=root.id order by name",root=opt.root):
+						print(name)
+				else:
+					for nodename,rootname in db.DoSelect("select node.name,root.name from node,root where node.root=root.id order by root.name,node.name"):
+						print(nodename,rootname)
+		elif opt.mode2 == "root":
+			if opt.name:
+				root_id,=db.DoFn("select id from root where name=${name}",name=opt.name)
+				report(root_info(db,root_id))
+			else:
+				for name, in db.DoSelect("select name from root order by name"):
+					print(name)
+		elif opt.mode2 == "inode":
+			report(inode_info(db,opt.inum))
+		elif opt.mode2 == "event":
+			report(event_info(db,opt.event_id))
+		else:
+			raise NotImplementedError("I don't know how to do that.")
 	else:
 		raise NotImplementedError("I don't yet know how to do that.")
 
