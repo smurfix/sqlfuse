@@ -37,6 +37,7 @@ from sqlfuse.options import options
 from sqlmix import Db,NoData
 
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
+inode_xattrs = inode_attrs.union(frozenset("copies".split()))
 
 import datetime
 def nowtuple():
@@ -179,7 +180,7 @@ class Inode(object):
 			self.attrs = {}
 			self.updated = set()
 			d = self.tree.db.DoFn("select * from inode where id=${inode}", inode=self.inum, _dict=1)
-			for k in inode_attrs:
+			for k in inode_xattrs:
 				if k.endswith("time"):
 					v = (d[k],d[k+"_ns"])
 				else:
@@ -322,7 +323,7 @@ def _setprop(key):
 	def pset(self,val):
 		self[key] = val
 	setattr(Inode,key,property(pget,pset))
-for k in inode_attrs:
+for k in inode_xattrs:
 	_setprop(k)
 del _setprop
 
@@ -461,7 +462,15 @@ class FileOperations(object):
 		self.lock = Lock(name="file<%d>"%inode.inum)
 		mode = flag2mode(flags)
 		self.mode = mode[0]
-		self.file = open(inode.tree._file_path(inode),mode)
+		ipath=inode.tree._file_path(inode)
+		if not os.path.exists(ipath) or mode[0] == "w" and flags&os.O_TRUNC:
+			inode.copies = 1 # ours
+			inode.tree.db.Do("insert into event(inode,node,typ) values(${inode},${node},'n')", inode=inode.inum,node=inode.tree.node_id)
+		elif mode[0] == "w":
+			mode = "r+"
+		self.file = open(ipath,mode)
+		if flags&os.O_TRUNC:
+			os.ftruncate(self.file.fileno(),0)
 		inode.set_inuse()
 
 	def read(self, length,offset):

@@ -20,13 +20,15 @@ class Range(list):
 	This class represents a disjunct sorted range of integers,
 	stored as (begin,end) tuples.
 	"""
-	def __init__(self,data, T=T,NT=NT):
+	def __init__(self,data=None, T=T,NT=NT):
 		"""If a string is given, decode it"""
 		if isinstance(data,basestring):
 			super(Range,self).__init__()
 			self.decode(data)
-		else:
+		elif data is not None:
 			super(Range,self).__init__(data)
+		else:
+			super(Range,self).__init__()
 
 	def __repr__(self):
 		return "%s(%s)" % (self.__class__.__name__,list.__repr__(self))

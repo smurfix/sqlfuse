@@ -35,7 +35,7 @@ sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 
 	print(server,opt)
 	llfuse.init(server, opt.mountpoint,
-			[  b'fsname=SqlFuse', b'nonempty', b'max_read=1048576', b'default_permissions', b'allow_other', b'dev', b'suid'])
+			[  b'fsname=SqlFuse', b'nonempty', b'max_read=1048576', b'default_permissions', b'allow_other', b'dev', b'suid', b'atomic_o_trunc'])
 	try:
 		llfuse.main()
 	finally:
