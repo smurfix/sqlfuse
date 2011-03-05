@@ -127,15 +127,15 @@ class SqlInode(Inode):
 		returnValue( res )
 
 	def setattr(self, **attrs):
-		size = attr.get('size',None)
+		size = attrs.get('size',None)
 		if size is not None:
-			with file(self._file_path(inode),"r+") as f:
+			with file(self._file_path(),"r+") as f:
 				f.truncate(size)
 		for f in inode_attrs:
 			if f == "atime": continue
-			v = attr.get(f,None)
+			v = attrs.get(f,None)
 			if v is not None:
-				setattr(inode,f,v)
+				self[f] = v
 
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
@@ -224,14 +224,14 @@ class SqlInode(Inode):
 		returnValue (None)
 			
 	@inlineCallbacks
-	def unlink(self, name):
+	def unlink(self, name, ctx=None):
 		with self.filesystem.db() as db:
 			inode = yield self._lookup(name,db)
 			mode = inode["mode"]
 			if stat.S_ISDIR(mode):
 				raise IOError(errno.EISDIR)
 			if not inode.defer_delete():
-				yield inode._remove()
+				yield inode._remove(db)
 		returnValue( None )
 
 	@inlineCallbacks
@@ -289,11 +289,12 @@ class SqlInode(Inode):
 			reactor.cancelCallLater(self.write_timer)
 			self.write_timer = None
 
-		mode,size = yield db.DoFn("select mode,size from inode where id=${inode}", inode=inode.nodeid)
-		yield db.Do("delete from tree where inode=${inode}", inode=inode.nodeid)
-		yield db.Do("delete from inode where id=${inode}", inode=inode.nodeid)
-		yield db.call_committed(self.rooter.d_inode,-1)
-		yield db.call_committed(self.rooter.d_size,size,0)
+		size, = yield db.DoFn("select size from inode where id=${inode}", inode=self.nodeid)
+		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid)
+		yield db.Do("insert into event(inode,node,typ) values(${inode},${node},'d')", inode=self.nodeid,node=self.filesystem.node_id)
+		#yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
+		yield db.call_committed(self.filesystem.rooter.d_inode,-1)
+		yield db.call_committed(self.filesystem.rooter.d_size,size,0)
 		self.nodeid = None
 		returnValue( None )
 
