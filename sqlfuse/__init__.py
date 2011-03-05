@@ -23,7 +23,7 @@ from weakref import WeakValueDictionary
 from sqlfuse.range import Range
 from twistfuse.filesystem import FileSystem,Inode,File,Dir
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
+from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, maybeDeferred
 from twisted.internet.threads import deferToThread
 from twist import deferToLater
 try:
@@ -60,10 +60,14 @@ def log_call(depth=0):
 	
 def flag2mode(flags):
 	"""translate OS flag (O_RDONLY) into access mode ("r")."""
-	if flags & os.O_APPEND:
-		mode = "a"
-	else:
-		mode = "w"
+	## Don't use O_APPEND on the underlying file; it may be too big due
+	## to previous errors or whatever. The file position in write()
+	## is correct.
+	#if flags & os.O_APPEND:
+	#	mode = "a"
+	#else:
+	mode = "w"
+
 	f = (flags & (os.O_WRONLY|os.O_RDONLY|os.O_RDWR))
 	if f == os.O_RDONLY:
 		mode = "r"
@@ -169,7 +173,7 @@ class SqlInode(Inode):
 		returnValue( inode )
 			
 	@inlineCallbacks
-	def create(self, name, flags, umask, ctx=None):
+	def create(self, name, flags,mode, umask, ctx=None):
 		"""New file."""
 		with self.filesystem.db() as db:
 			try:
@@ -183,7 +187,11 @@ class SqlInode(Inode):
 				yield inode._load(db)
 	
 			res = self.filesystem.FileType(inode, flags)
-			yield res.open()
+
+		# opens its own database connection and therefore must be outside
+		# the with block
+		yield res.open()
+
 		returnValue(res)
 
 	@inlineCallbacks
@@ -191,9 +199,10 @@ class SqlInode(Inode):
 		"""\
 			Helper to create a new named inode.
 			"""
-		if len(name) == 0 or len(name) > self.info.namelen:
+		if len(name) == 0 or len(name) > self.filesystem.info.namelen:
 			raise IOError(errno.ENAMETOOLONG)
 		now,now_ns = nowtuple()
+		if rdev is None: rdev=0
 		inum = yield db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev)
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
 		
@@ -715,9 +724,9 @@ class SqlFile(File):
 		mode = flag2mode(self.mode)
 		ipath=self.node._file_path()
 		if not os.path.exists(ipath) or mode[0] == "w" and self.mode & os.O_TRUNC:
-			inode.copies = 1 # ours
+			self.node["copies"] = 1 # ours
 			with self.node.filesystem.db() as db:
-				yield db.Do("insert into event(inode,node,typ) values(${inode},${node},'n')", inode=self.nodeid,node=self.node.filesystem.node_id)
+				yield db.Do("insert into event(inode,node,typ) values(${inode},${node},'n')", inode=self.node.nodeid,node=self.node.filesystem.node_id)
 		elif mode[0] == "w":
 			mode = "r+"
 		self.file = yield deferToThread(open,ipath,mode)
