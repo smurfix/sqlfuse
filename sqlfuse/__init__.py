@@ -226,10 +226,18 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def unlink(self, name, ctx=None):
 		with self.filesystem.db() as db:
-			inode = yield self._lookup(name,db)
-			mode = inode["mode"]
-			if stat.S_ISDIR(mode):
-				raise IOError(errno.EISDIR)
+			yield self._unlink(name,ctx=ctx,db=db)
+		returnValue( None )
+
+	@inlineCallbacks
+	def _unlink(self, name, ctx=None, db=None):
+		inode = yield self._lookup(name,db)
+		if stat.S_ISDIR(inode["mode"]):
+			raise IOError(errno.EISDIR)
+
+		yield db.Do("delete from tree where parent=${par} and name=${name}", par=self.nodeid,name=name)
+		cnt, = yield db.DoFn("select count(*) from tree where inode=${inode}", inode=inode.nodeid)
+		if cnt == 0:
 			if not inode.defer_delete():
 				yield inode._remove(db)
 		returnValue( None )
@@ -251,9 +259,16 @@ class SqlInode(Inode):
 		log_call()
 		raise IOError(errno.EOPNOTSUPP)
 
-	def link(self, inum, inum_p_new, name_new):
-		log_call()
-		raise IOError(errno.EOPNOTSUPP)
+	@inlineCallbacks
+	def link(self, oldnode,target, ctx=None):
+		with self.filesystem.db() as db:
+			try:
+				yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=oldnode.nodeid,par=self.nodeid,name=target)
+			except Exception:
+				raise IOError(errno.EEXIST, "%d:%s" % (self.nodeid,target))
+		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
+			
+			
 
 	@inlineCallbacks
 	def mknod(self, name, mode, rdev, ctx=None):
@@ -290,7 +305,7 @@ class SqlInode(Inode):
 			self.write_timer = None
 
 		size, = yield db.DoFn("select size from inode where id=${inode}", inode=self.nodeid)
-		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid)
+		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
 		yield db.Do("insert into event(inode,node,typ) values(${inode},${node},'d')", inode=self.nodeid,node=self.filesystem.node_id)
 		#yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
 		yield db.call_committed(self.filesystem.rooter.d_inode,-1)
