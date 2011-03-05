@@ -726,7 +726,7 @@ class SqlFile(File):
 		returnValue( None )
 
 	@inlineCallbacks
-	def read(self, offset,length):
+	def read(self, offset,length, ctx=None):
 		"""Read file, updating atime"""
 		#self.node.atime = nowtuple()
 		def _read():
@@ -768,13 +768,17 @@ class SqlFile(File):
 		return deferToThread(self.file.flush)
 
 	@inlineCallbacks
-	def fsync(self, flags):
-		"""self-explanatory :-P"""
-		if data_only and hasattr(os, 'fdatasync'):
+	def sync(self, flags, ctx=None):
+		"""\
+			self-explanatory :-P
+
+			flags&1: use fdatasync()
+		"""
+		if flags & 1 and hasattr(os, 'fdatasync'):
 			yield deferToThread(os.fdatasync,self.file.fileno())
 		else:
 			yield deferToThread(os.fsync,self.file.fileno())
-		yield self.node.sync(flas)
+		yield self.node.sync(flags)
 		returnValue( None )
 
 	def lock(self, cmd, owner, **kw):
@@ -827,7 +831,7 @@ class SqlDir(Dir):
 		node.set_inuse()
 	
 	@inlineCallbacks
-	def read(self, callback, offset=0):
+	def read(self, callback, offset=0, ctx=None):
 		# We use the actual inode as offset, except for . and ..
 		# Fudge the value a bit so that there's no cycle.
 		tree = self.node.filesystem
@@ -843,7 +847,7 @@ class SqlDir(Dir):
 				yield self.node._remove(db)
 		returnValue( None )
 
-	def sync(self):
+	def sync(self, ctx=None):
 		log_call()
 		return
 
