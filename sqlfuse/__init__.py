@@ -262,10 +262,15 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def link(self, oldnode,target, ctx=None):
 		with self.filesystem.db() as db:
-			try:
-				yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=oldnode.nodeid,par=self.nodeid,name=target)
-			except Exception:
-				raise IOError(errno.EEXIST, "%d:%s" % (self.nodeid,target))
+			res = yield self._link(oldnode,target, ctx=ctx,db=db)
+		returnValue( res )
+
+	@inlineCallbacks
+	def _link(self, oldnode,target, ctx=None,db=None):
+		try:
+			yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=oldnode.nodeid,par=self.nodeid,name=target)
+		except Exception:
+			raise IOError(errno.EEXIST, "%d:%s" % (self.nodeid,target))
 		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
 			
 			
@@ -296,8 +301,8 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def _remove(self,db):
 		try:
-			os.unlink(self._file_path())
-		except OSError as e:
+			yield deferToThread(os.unlink,self._file_path())
+		except EnvironmentError as e:
 			if e.errno != errno.ENOENT:
 				raise
 		if self.write_timer:
@@ -949,9 +954,21 @@ class SqlFuse(FileSystem):
 		log_call()
 		raise IOError(errno.EOPNOTSUPP)
 
+
+	@inlineCallbacks
 	def rename(self, inode_old, name_old, inode_new, name_new, ctx=None):
-		log_call()
-		raise IOError(errno.EOPNOTSUPP)
+		with self.db() as db:
+			old_inode = yield inode_old._lookup(name_old,db)
+			try:
+				yield inode_new._unlink(name_new, ctx=ctx,db=db)
+			except EnvironmentError as e:
+				if e.errno != errno.ENOENT:
+					raise
+			yield inode_new._link(old_inode,name_new, ctx=ctx,db=db)
+			yield inode_old._unlink(name_old, ctx=ctx,db=db)
+
+		returnValue( None )
+
 
 ## not supported, we're not file-backed
 #	def bmap(self, *a,**k):
