@@ -14,32 +14,40 @@ DBVERSION = "0.1"
 
 BLOCKSIZE = 4096
 
-from sqlmix import Db
-
-import llfuse
+from twisted.internet import reactor
+from sqlmix.twisted import DbPool
 from sqlfuse import SqlFuse
 from sqlfuse.options import options
+from twistfuse.handler import Handler
+import sys
 
+h = None
 def main():
 	usage = """
 sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 """ 
 
-	server = SqlFuse()
+	fs = SqlFuse()
 	opt = options("opt") # (,usage=usage)
 
-	db = Db(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
-	if not hasattr(db,"call_committed"):
-		raise NotImplementedError("Need newer version of sqlmix module")
-	server.init_db(db, opt.node)
-
-	print(server,opt)
-	llfuse.init(server, opt.mountpoint,
-			[  b'fsname=SqlFuse', b'nonempty', b'max_read=1048576', b'default_permissions', b'allow_other', b'dev', b'suid', b'atomic_o_trunc'])
-	try:
-		llfuse.main()
-	finally:
-		llfuse.close()
+	def startup():
+		db = DbPool(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
+		d = fs.init_db(db, opt.node)
+		def did_init(r):
+			global h
+			h = Handler()
+			h.mount(fs,opt.mountpoint)
+			fs.init()
+		d.addCallback(did_init)
+		def did_error(e):
+			print("Error:",e,file=sys.stderr)
+			reactor.stop()
+		d.addErrback(did_error)
+	reactor.callWhenRunning(startup)
+	reactor.run()
+	if h is not None:
+		h.umount()
+	fs.destroy()
 
 if __name__ == '__main__':
 	main()

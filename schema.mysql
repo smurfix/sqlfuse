@@ -44,10 +44,10 @@ CREATE TABLE `inode` (
   `mtime_ns` int(10) unsigned NOT NULL default '0',
   `ctime_ns` int(10) unsigned NOT NULL default '0',
   `size` bigint(20) NOT NULL default '0', -- mirrors file size
-  `rdev` int(10) NULL,
+  `rdev` int(10) NOT NULL default '0',
   `event` bigint(20) unsigned NULL, -- ID of file's latest event record
   `copies` smallint(5) unsigned not NULL default 0, -- number of physical copies
-  `seq` bigint(20) unsigned not null default '0', -- sequence number
+  `seq` bigint(20) unsigned not null default '1', -- update sequence number
   PRIMARY KEY (`id`),
   UNIQUE KEY `event` (`event`)
 ) DEFAULT CHARSET=binary;
