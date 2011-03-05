@@ -262,6 +262,8 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def link(self, oldnode,target, ctx=None):
 		with self.filesystem.db() as db:
+			if stat.S_ISDIR(oldnode['mode']):
+				raise IOError(errno.EISDIR,"Cannot link a directory")
 			res = yield self._link(oldnode,target, ctx=ctx,db=db)
 		returnValue( res )
 
