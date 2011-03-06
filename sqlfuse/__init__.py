@@ -11,7 +11,7 @@ from __future__ import division, print_function, absolute_import
 
 __all__ = ["SqlFuse"]
 
-DBVERSION = "0.2"
+DBVERSION = "0.3"
 
 BLOCKSIZE = 4096
 
@@ -102,7 +102,6 @@ class SqlInode(Inode):
 #		'changes',       # Range of bytes written (but not saved in a change record)
 #		'inuse',         # open files on this inode? <0:delete after close
 #		'write_timer',   # attribute write timer
-#		'_delay',        # defer updates (required for creation, which needs to be committed first)
 #		]
 
 	# ___ FUSE methods ___
@@ -195,7 +194,7 @@ class SqlInode(Inode):
 		returnValue(res)
 
 	@inlineCallbacks
-	def _new_inode(self, db, name,mode,ctx=None,rdev=None):
+	def _new_inode(self, db, name,mode,ctx=None,rdev=None,symlink=None):
 		"""\
 			Helper to create a new named inode.
 			"""
@@ -203,12 +202,11 @@ class SqlInode(Inode):
 			raise IOError(errno.ENAMETOOLONG)
 		now,now_ns = nowtuple()
 		if rdev is None: rdev=0
-		inum = yield db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev)
+		inum = yield db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,symlink) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${symlink})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,symlink=symlink)
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
 		
 		inode = SqlInode(self.filesystem,inum)
 		yield inode._load(db)
-		inode.set_delay(db)
 		returnValue( inode )
 
 	@inlineCallbacks
@@ -255,9 +253,11 @@ class SqlInode(Inode):
 			yield inode._remove(db)
 		returnValue( None )
 
+	@inlineCallbacks
 	def symlink(self, name, target, ctx=None):
-		log_call()
-		raise IOError(errno.EOPNOTSUPP)
+		with self.filesystem.db() as db:
+			inode = yield self._new_inode(db,name,stat.S_IFLNK|(0o777&~ctx.umask) ,ctx,symlink=target)
+		returnValue( inode )
 
 	@inlineCallbacks
 	def link(self, oldnode,target, ctx=None):
@@ -277,8 +277,7 @@ class SqlInode(Inode):
 			
 
 	@inlineCallbacks
-	def mknod(self, name, mode, rdev, ctx=None):
-		log_call()
+	def mknod(self, name, mode, rdev, umask, ctx=None):
 		with self.filesystem.db() as db:
 			inode = yield self._new_inode(db,name,mode,ctx,rdev)
 		returnValue( inode )
@@ -312,7 +311,8 @@ class SqlInode(Inode):
 
 		size, = yield db.DoFn("select size from inode where id=${inode}", inode=self.nodeid)
 		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
-		self.filesystem.record.delete(self.nodeid)
+		if stat.S_ISREG(self['mode']):
+			self.filesystem.record.delete(self)
 		#yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
 		yield db.call_committed(self.filesystem.rooter.d_inode,-1)
 		yield db.call_committed(self.filesystem.rooter.d_size,size,0)
@@ -389,6 +389,8 @@ class SqlInode(Inode):
 				raise IOError(errno.ENOATTR)
 		returnValue( None )
 
+	def readlink(self, ctx=None):
+		return self["symlink"]
 
 	# ___ supporting stuff ___
 
@@ -452,7 +454,6 @@ class SqlInode(Inode):
 		self.timestamp = None
 		self.inuse = 0
 		self.changes = Range()
-		self._delay = 0
 		self.write_timer = None
 		# defer anything we only need when loaded to after _load is called
 
@@ -511,7 +512,6 @@ class SqlInode(Inode):
 	def _save(self, db):
 		"""Save local attributes"""
 		if not self.nodeid: return
-		if self._delay: return
 		ch = None
 
 		# no "with" statement here: after collecting attrs, we need
@@ -591,21 +591,6 @@ class SqlInode(Inode):
 		if self.inuse < 0:
 			self.inuse = -self.inuse
 
-	# background update (necessary after inode creation)
-	def set_delay(self,db):
-		self._delay = 1
-		db.call_committed(self.clr_delay)
-		db.call_rolledback(self.del_delay)
-
-	def clr_delay(self):
-		self._delay = 0
-		self._save()
-		
-	def del_delay(self):
-		self._delay = 0
-		self.filesystem.forget(self)
-		self.nodeid = None
-		
 def _setprop(key):
 	def pget(self):
 		return self[key]
@@ -904,7 +889,17 @@ class SqlDir(Dir):
 		return
 
 
+class DummyQuit(object):
+	def quit(self): pass
+	def close(self): pass
+
 class SqlFuse(FileSystem):
+	MOUNT_OPTIONS={'allow_other':None, 'suid':None, 'dev':None, 'exec':None, 'fsname':'fuse.sql'}
+
+	rooter = DummyQuit()
+	record = DummyQuit()
+	db = DummyQuit()
+
 	def __init__(self,*a,**k):
 		self._slot = {}
 		self._slot_next = 1
@@ -971,10 +966,6 @@ class SqlFuse(FileSystem):
 			self.db.commit()
 		else:
 			self.db.rollback()
-
-	def readlink(self, inum, ctx=None):
-		log_call()
-		raise IOError(errno.EOPNOTSUPP)
 
 
 	@inlineCallbacks
@@ -1135,11 +1126,14 @@ class SqlFuse(FileSystem):
 		for c in reactor.getDelayedCalls():
 			c.reset(0)
 		self.rooter.quit()
+		self.rooter = None
 		self.record.quit()
+		self.record = None
+		self.db.close()
+		self.db = None
 		reactor.iterate(delay=0.01)
 		#self.db.stop() # TODO: shutdown databases
 		#reactor.iterate(delay=0.05)
-		self.db = None
 
 	def stacktrace(self):
 		'''Debugging, triggered when the "fuse_stacktrace" attribute

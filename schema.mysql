@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.2');
+insert into info(name,value) values('version','0.3');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -48,11 +48,12 @@ CREATE TABLE `inode` (
   `event` bigint(20) unsigned NULL, -- ID of file's latest event record
   `copies` smallint(5) unsigned not NULL default 0, -- number of physical copies
   `seq` bigint(20) unsigned not null default '1', -- update sequence number
+  `symlink` varchar(1023) null, -- link destination
   PRIMARY KEY (`id`),
   UNIQUE KEY `event` (`event`)
 ) DEFAULT CHARSET=binary;
 insert into `inode` (`id`,`mode`) values (1,0); -- S_IFDIR, set when first mounting
-
+insert into info(name,value) values('symlinklen','1023');
 --
 -- Inodes can have extended attributes.
 -- This table collects attribute names (they can be quite long and redundant).
