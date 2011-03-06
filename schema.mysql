@@ -147,7 +147,7 @@ CREATE TABLE `event` (
   `id` bigint(20) unsigned NOT NULL auto_increment,
   `inode` bigint(20) unsigned NOT NULL,
   `node` int(10) unsigned NOT NULL,
-  `typ` char(1) NOT NULL, -- 'n'ew 'c'hange 'f'inish_write 'd'elete 'i'nit_node
+  `typ` char(1) NOT NULL, -- 'n'ew 'c'hange 'f'inish_write 'd'elete 'i'nit_node 's'ync
   `range` varbinary(1023) NULL, -- for change records: what was witten?
   PRIMARY KEY (`id`),
   KEY `fk_event_node` (`node`),

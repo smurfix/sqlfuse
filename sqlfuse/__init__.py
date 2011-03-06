@@ -22,6 +22,7 @@ from time import sleep,time
 from weakref import WeakValueDictionary
 from sqlfuse.range import Range
 from twistfuse.filesystem import FileSystem,Inode,File,Dir
+from twistfuse.kernel import FUSE_ATOMIC_O_TRUNC,FUSE_ASYNC_READ,FUSE_EXPORT_SUPPORT,FUSE_BIG_WRITES
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, maybeDeferred
 from twisted.internet.threads import deferToThread
@@ -191,7 +192,6 @@ class SqlInode(Inode):
 		# opens its own database connection and therefore must be outside
 		# the with block
 		yield res.open()
-
 		returnValue(res)
 
 	@inlineCallbacks
@@ -275,7 +275,6 @@ class SqlInode(Inode):
 			raise IOError(errno.EEXIST, "%d:%s" % (self.nodeid,target))
 		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
 			
-			
 
 	@inlineCallbacks
 	def mknod(self, name, mode, rdev, ctx=None):
@@ -313,7 +312,7 @@ class SqlInode(Inode):
 
 		size, = yield db.DoFn("select size from inode where id=${inode}", inode=self.nodeid)
 		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
-		yield db.Do("insert into event(inode,node,typ) values(${inode},${node},'d')", inode=self.nodeid,node=self.filesystem.node_id)
+		self.filesystem.record.delete(self.nodeid)
 		#yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
 		yield db.call_committed(self.filesystem.rooter.d_inode,-1)
 		yield db.call_committed(self.filesystem.rooter.d_size,size,0)
@@ -559,7 +558,7 @@ class SqlInode(Inode):
 					self.old_size = self.attrs["size"]
 				db.call_committed(do_size)
 		if ch:
-			yield db.Do("insert into event(inode,node,typ,`range`) values(${inode},${node},'c',${range})", inode=self.nodeid,range=ch,node=self.filesystem.node_id)
+			self.filesystem.record.change(self,ch)
 
 		returnValue( None )
 
@@ -641,7 +640,7 @@ class BackgroundJob(object):
 			self.restart = True
 
 	def quit(self):
-		if self.worker is None or self.worker is True:
+		if self.worker is None:
 			return
 		self.worker.reset(0)
 
@@ -710,25 +709,41 @@ class RootUpdater(BackgroundJob):
 				yield db.Do("update root set nfiles=nfiles+${inodes}, nblocks=nblocks+${blocks}, ndirs=ndirs+${dirs}", root=self.tree.root_id, inodes=d_inode, blocks=d_block, dirs=d_dir)
 		returnValue( None )
 
-class InodeFlusher(BackgroundJob):
-	def __init__(self):
-		super(InodeFlusher,self).__init__()
-		self.inodes = Heap()
+class Recorder(BackgroundJob):
+	def __init__(self,tree):
+		super(Recorder,self).__init__()
+		self.tree = tree
+		self.data = []
 
-	def add(self, inode):
-		if not inode.inum: return
-		self.inodes.push((time(),inode))
-		if len(self.inodes) < 2:
-			self.trigger()
-
+	@inlineCallbacks
 	def work(self):
-		t = time()-10
-		while True:
-			if not self.inodes:
-				return None
-			if self.inodes[0][0] > t:
-				return self.inodes[0][0]-t
-			inode = self.inodes.pop()[1]
+		d = self.data
+		self.data = []
+		with self.tree.db() as db:
+			if not d:
+				yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=self.tree.inum,node=self.tree.node_id,data=None,event='s' )
+			else:
+				for event,inum,data in d:
+					yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=inum,node=self.tree.node_id,data=data,event=event )
+				self.restart = True
+		returnValue( None )
+		
+	def delete(self,inode):
+		self.data.append(('d',inode.nodeid,None))
+		self.trigger()
+	
+	def new(self,inode):
+		self.data.append(('n',inode.nodeid,None))
+		self.trigger()
+
+	def change(self,inode,data):
+		self.data.append(('c',inode.nodeid,data))
+		self.trigger()
+
+	def finish_write(self,inode):
+		self.data.append(('f',inode.nodeid,None))
+		self.trigger()
+
 
 class SqlFile(File):
 	"""Operations on open files.
@@ -741,15 +756,17 @@ class SqlFile(File):
 		super(SqlFile,self).__init__(node,mode)
 		self.lock = Lock(name="file<%d>"%node.nodeid)
 		node.set_inuse()
+		self.writes = 0
 	
 	@inlineCallbacks
 	def open(self, ctx=None):
 		mode = flag2mode(self.mode)
 		ipath=self.node._file_path()
-		if not os.path.exists(ipath) or mode[0] == "w" and self.mode & os.O_TRUNC:
+		print("*** OPEN %s %o %o"%(ipath,self.mode,os.O_TRUNC))
+		if not os.path.exists(ipath) or self.mode & os.O_TRUNC:
 			self.node["copies"] = 1 # ours
-			with self.node.filesystem.db() as db:
-				yield db.Do("insert into event(inode,node,typ) values(${inode},${node},'n')", inode=self.node.nodeid,node=self.node.filesystem.node_id)
+			self.node["size"] = 0
+			self.node.filesystem.record.new(self.node)
 		elif mode[0] == "w":
 			mode = "r+"
 		self.file = yield deferToThread(open,ipath,mode)
@@ -783,6 +800,7 @@ class SqlFile(File):
 		if self.node.size < end:
 			self.node.size = end
 		self.node.changes.add(offset,end)
+		self.writes += 1
 		returnValue( len(buf) )
 
 	@inlineCallbacks
@@ -793,6 +811,8 @@ class SqlFile(File):
 			yield deferToThread(self.file.close)
 			if self.node.clr_inuse():
 				yield self.node.tree._remove(self.node,db)
+		if self.writes:
+			self.node.filesystem.record.finish_write(self.node)
 		returnValue( None )
 
 	def flush(self,flags, ctx=None):
@@ -1100,7 +1120,12 @@ class SqlFuse(FileSystem):
 		"""
 		self.rooter = RootUpdater(self)
 		self.rooter.start()
-		pass
+		self.record = Recorder(self)
+		self.record.start()
+
+	def mount(self,handler,flags):
+		self.handler = handler
+		return {'flags': FUSE_ATOMIC_O_TRUNC|FUSE_ASYNC_READ|FUSE_EXPORT_SUPPORT|FUSE_BIG_WRITES}
 
 	def destroy(self):
 		"""\
@@ -1109,6 +1134,8 @@ class SqlFuse(FileSystem):
 
 		for c in reactor.getDelayedCalls():
 			c.reset(0)
+		self.rooter.quit()
+		self.record.quit()
 		reactor.iterate(delay=0.01)
 		#self.db.stop() # TODO: shutdown databases
 		#reactor.iterate(delay=0.05)
