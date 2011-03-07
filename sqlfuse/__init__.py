@@ -772,7 +772,6 @@ class SqlFile(File):
 	def open(self, ctx=None):
 		mode = flag2mode(self.mode)
 		ipath=self.node._file_path()
-		print("*** OPEN %s %o %o"%(ipath,self.mode,os.O_TRUNC))
 		if not os.path.exists(ipath) or self.mode & os.O_TRUNC:
 			self.node.copies = 1 # ours
 			self.node.size = 0
