@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.3');
+insert into info(name,value) values('version','0.3.1');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -34,6 +34,7 @@ insert into info(name,value) values('version','0.3');
 DROP TABLE IF EXISTS `inode`;
 CREATE TABLE `inode` (
   `id` bigint(20) unsigned NOT NULL auto_increment,
+  `root` int(10) unsigned NOT NULL default '0',
   `mode` int(11) NOT NULL default '0',
   `uid` int(10) unsigned NOT NULL default '0',
   `gid` int(10) unsigned NOT NULL default '0',
@@ -52,7 +53,7 @@ CREATE TABLE `inode` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `event` (`event`)
 ) DEFAULT CHARSET=binary;
-insert into `inode` (`id`,`mode`) values (1,0); -- S_IFDIR, set when first mounting
+insert into `inode` (`id`,`mode`,`root`) values (1,0,1); -- S_IFDIR, set when first mounting
 insert into info(name,value) values('targetlen','1023');
 --
 -- Inodes can have extended attributes.
@@ -121,6 +122,7 @@ CREATE TABLE `root` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 insert into `root`(`id`,`inode`,`name`) values(1,1,'master');
 insert into info(name,value) values('rootnamelen','255');
+alter table `inode` add constraint `fk_inode_root` foreign key(`root`) references `root`(`id`) on delete restrict;
 
 -- 
 -- Multiple instances can have disparate directory views.
