@@ -23,6 +23,7 @@ from weakref import WeakValueDictionary
 from sqlfuse.range import Range
 from twistfuse.filesystem import FileSystem,Inode,File,Dir
 from twistfuse.kernel import FUSE_ATOMIC_O_TRUNC,FUSE_ASYNC_READ,FUSE_EXPORT_SUPPORT,FUSE_BIG_WRITES
+from twistfuse.kernel import XATTR_CREATE,XATTR_REPLACE
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, maybeDeferred
 from twisted.internet.threads import deferToThread
@@ -383,7 +384,7 @@ class SqlInode(Inode):
 		returnValue( val )
 
 	@inlineCallbacks
-	def setxattr(self, name, value, ctx=None):
+	def setxattr(self, name, value, flags, ctx=None):
 		if len(value) > self.filesystem.info.attrlen:
 			raise IOError(errno.E2BIG)
 		with self.filesystem.db() as db:
@@ -391,7 +392,12 @@ class SqlInode(Inode):
 			try:
 				yield db.Do("update xattr set value=${value},seq=seq+1 where inode=${inode} and name=${name}", inode=self.nodeid,name=nid,value=value)
 			except NoData:
+				if flags & XATTR_REPLACE:
+					raise IOError(errno.ENOATTR)
 				yield db.Do("insert into xattr (inode,name,value,seq) values(${inode},${name},${value},1)", inode=self.nodeid,name=nid,value=value)
+			else: 
+				if flags & XATTR_CREATE:
+					raise IOError(errno.EEXIST)
 		returnValue( None )
 
 	@inlineCallbacks
