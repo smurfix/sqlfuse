@@ -231,7 +231,7 @@ class SqlInode(Inode):
 			Drop this node: save.
 			"""
 		if self.write_timer:
-			reactor.cancelCallLater(self.write_timer)
+			self.write_timer.cancel()
 			self.write_timer = None
 		with self.filesystem.db() as db:
 			yield self._save(db)
@@ -326,7 +326,7 @@ class SqlInode(Inode):
 			if e.errno != errno.ENOENT:
 				raise
 		if self.write_timer:
-			reactor.cancelCallLater(self.write_timer)
+			self.write_timer.cancel()
 			self.write_timer = None
 
 		size, = yield db.DoFn("select size from inode where id=${inode}", inode=self.nodeid)
@@ -726,10 +726,46 @@ class RootUpdater(BackgroundJob):
 		returnValue( None )
 
 class Recorder(BackgroundJob):
+	"""\
+		I record inode changes so that another node can see what I did, and
+		fetch my changes.
+		"""
 	def __init__(self,tree):
 		super(Recorder,self).__init__()
 		self.tree = tree
 		self.data = []
+		self.cleanup = reactor.callLater(10,self.cleaner)
+
+	def cleaner(self):
+		self.cleanup = None
+		d = self._cleaner()
+		def done(r):
+			self.cleanup = reactor.callLater(10,self.cleaner)
+			return r
+		d.addBoth(done)
+		d.addErrback(lambda r: r.printTraceback(file=sys.stderr))
+
+	@inlineCallbacks
+	def _cleaner(self):
+		rnodes = []
+		with self.tree.db() as db:
+			yield db.DoSelect("select id from node where root=${root} and id != ${node}", root=self.tree.root_id,node=self.tree.node_id, _empty=True, _callback=rnodes.append)
+			if rnodes:
+				pass
+				# TODO
+			else:
+				# No nodes. Cleanup change records.
+				try:
+					evt, = yield db.DoFn("select id from event where node=${node} and typ = 's' order by id desc limit 1", node=self.tree.node_id)
+					yield db.Do("delete from event where node=${node} and id < ${id}", id=evt,node=self.tree.node_id)
+				except NoData:
+					pass
+
+	def quit(self):
+		if self.cleanup:
+			self.cleanup.cancel()
+			self.cleanup = None
+		super(Recorder,self).quit()
 
 	@inlineCallbacks
 	def work(self):
@@ -922,12 +958,22 @@ class SqlDir(Dir):
 class DummyQuit(object):
 	def quit(self): pass
 	def close(self): pass
+class DummyRecorder(DummyQuit):
+	def delete(self,inode): pass
+	def new(self,inode): pass
+	def change(self,inode,data): pass
+	def finish_write(self,inode): pass
+class DummyRooter(DummyQuit):
+	def d_inode(self,delta): pass
+	def d_dir(self,delta): pass
+	def d_size(self,old,new): pass
+
 
 class SqlFuse(FileSystem):
 	MOUNT_OPTIONS={'allow_other':None, 'suid':None, 'dev':None, 'exec':None, 'fsname':'fuse.sql'}
 
-	rooter = DummyQuit()
-	record = DummyQuit()
+	rooter = DummyRooter()
+	record = DummyRecorder()
 	db = DummyQuit()
 
 	def __init__(self,*a,**k):
