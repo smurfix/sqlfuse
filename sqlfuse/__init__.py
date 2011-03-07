@@ -44,7 +44,7 @@ from sqlfuse.options import options
 from sqlmix import Db,NoData
 
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
-inode_xattrs = inode_attrs.union(frozenset("copies symlink".split()))
+inode_xattrs = inode_attrs.union(frozenset("copies target".split()))
 
 import datetime
 def nowtuple():
@@ -131,11 +131,22 @@ class SqlInode(Inode):
 		if size is not None:
 			with file(self._file_path(),"r+") as f:
 				f.truncate(size)
+		do_mtime = False; do_ctime = False; did_mtime = False
 		for f in inode_attrs:
-			if f == "atime": continue
+			if f == "ctime": continue
 			v = attrs.get(f,None)
 			if v is not None:
 				self[f] = v
+				if f == "size":
+					do_mtime = True
+				else:
+					do_ctime = True
+					if f == "mtime":
+						did_mtime = True
+		if do_ctime:
+			self.ctime = nowtuple()
+		if do_mtime and not did_mtime:
+			self.mtime = nowtuple()
 
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
@@ -194,7 +205,7 @@ class SqlInode(Inode):
 		returnValue(res)
 
 	@inlineCallbacks
-	def _new_inode(self, db, name,mode,ctx=None,rdev=None,symlink=None):
+	def _new_inode(self, db, name,mode,ctx=None,rdev=None,target=None):
 		"""\
 			Helper to create a new named inode.
 			"""
@@ -202,10 +213,11 @@ class SqlInode(Inode):
 			raise IOError(errno.ENAMETOOLONG)
 		now,now_ns = nowtuple()
 		if rdev is None: rdev=0 # not NULL
-		if symlink: size=len(symlink)
+		if target: size=len(target)
 		else: size=0
+		self.mtime = nowtuple()
 
-		inum = yield db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,symlink,size) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${symlink},${size})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,symlink=symlink,size=size)
+		inum = yield db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size)
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
 		
 		inode = SqlInode(self.filesystem,inum)
@@ -233,7 +245,7 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def _unlink(self, name, ctx=None, db=None):
 		inode = yield self._lookup(name,db)
-		if stat.S_ISDIR(inode["mode"]):
+		if stat.S_ISDIR(inode.mode):
 			raise IOError(errno.EISDIR)
 
 		yield db.Do("delete from tree where parent=${par} and name=${name}", par=self.nodeid,name=name)
@@ -241,6 +253,7 @@ class SqlInode(Inode):
 		if cnt == 0:
 			if not inode.defer_delete():
 				yield inode._remove(db)
+		self.mtime = nowtuple()
 		returnValue( None )
 
 	@inlineCallbacks
@@ -258,17 +271,17 @@ class SqlInode(Inode):
 
 	@inlineCallbacks
 	def symlink(self, name, target, ctx=None):
-		if len(target) > self.filesystem.info.symlinklen:
+		if len(target) > self.filesystem.info.targetlen:
 			raise IOError(errno.EDIR,"Cannot link a directory")
 		with self.filesystem.db() as db:
-			inode = yield self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,symlink=target)
+			inode = yield self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,target=target)
 		returnValue( inode )
 
 	@inlineCallbacks
 	def link(self, oldnode,target, ctx=None):
 		with self.filesystem.db() as db:
-			if stat.S_ISDIR(oldnode['mode']):
-				raise IOError(errno.ENAMETOOLONG,"symlink entry too long")
+			if stat.S_ISDIR(oldnode.mode):
+				raise IOError(errno.ENAMETOOLONG,"target entry too long")
 			res = yield self._link(oldnode,target, ctx=ctx,db=db)
 		returnValue( res )
 
@@ -278,6 +291,7 @@ class SqlInode(Inode):
 			yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=oldnode.nodeid,par=self.nodeid,name=target)
 		except Exception:
 			raise IOError(errno.EEXIST, "%d:%s" % (self.nodeid,target))
+		self.mtime = nowtuple()
 		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
 			
 
@@ -315,8 +329,14 @@ class SqlInode(Inode):
 			self.write_timer = None
 
 		size, = yield db.DoFn("select size from inode where id=${inode}", inode=self.nodeid)
+		entries = []
+		yield db.DoSelect("select parent from tree where inode=${inode}", inode=self.nodeid, _empty=True, _callback=entries.append)
+		for p, in entries:
+			p = SqlInode(self.filesystem,p)
+			yield p._load(db)
+			p.mtime = nowtuple()
 		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
-		if stat.S_ISREG(self['mode']):
+		if stat.S_ISREG(self.mode):
 			self.filesystem.record.delete(self)
 		#yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
 		yield db.call_committed(self.filesystem.rooter.d_inode,-1)
@@ -395,7 +415,7 @@ class SqlInode(Inode):
 		returnValue( None )
 
 	def readlink(self, ctx=None):
-		return self["symlink"]
+		return self.target
 
 	# ___ supporting stuff ___
 
@@ -754,8 +774,8 @@ class SqlFile(File):
 		ipath=self.node._file_path()
 		print("*** OPEN %s %o %o"%(ipath,self.mode,os.O_TRUNC))
 		if not os.path.exists(ipath) or self.mode & os.O_TRUNC:
-			self.node["copies"] = 1 # ours
-			self.node["size"] = 0
+			self.node.copies = 1 # ours
+			self.node.size = 0
 			self.node.filesystem.record.new(self.node)
 		elif mode[0] == "w":
 			mode = "r+"
