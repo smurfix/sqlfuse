@@ -376,7 +376,9 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def getxattr(self, name, ctx=None):
 		with self.filesystem.db() as db:
-			nid = yield self.filesystem.xattr_id(name,db)
+			nid = yield self.filesystem.xattr_id(name,db,False)
+			if nid is None:
+				raise IOError(errno.ENOATTR)
 			try:
 				val, = yield db.DoFn("select value from xattr where inode=${inode} and name=${name}", inode=self.nodeid,name=nid)
 			except NoData:
@@ -388,7 +390,7 @@ class SqlInode(Inode):
 		if len(value) > self.filesystem.info.attrlen:
 			raise IOError(errno.E2BIG)
 		with self.filesystem.db() as db:
-			nid = yield self.filesystem.xattr_id(name,db)
+			nid = yield self.filesystem.xattr_id(name,db,True)
 			try:
 				yield db.Do("update xattr set value=${value},seq=seq+1 where inode=${inode} and name=${name}", inode=self.nodeid,name=nid,value=value)
 			except NoData:
@@ -413,7 +415,9 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def removexattr(self, name, ctx=None):
 		with self.filesystem.db() as db:
-			nid=self.filesystem.xattr_id(name, db)
+			nid = self.filesystem.xattr_id(name, db,False)
+			if nid is None:
+				raise IOError(errno.ENOATTR)
 			try:
 				yield db.Do("delete from xattr where inode=${inode} and name=${name}", inode=self.nodeid,name=nid)
 			except NoData:
@@ -1098,7 +1102,7 @@ class SqlFuse(FileSystem):
 		returnValue( name )
 
 	@inlineCallbacks
-	def xattr_id(self,name,db):
+	def xattr_id(self,name,db,add=False):
 		"""xattr name-to-key translation"""
 		if len(name) == 0 or len(name) > self.info.attrnamelen:
 			raise IOError(errno.ENAMETOOLONG)
@@ -1114,6 +1118,9 @@ class SqlFuse(FileSystem):
 			try:
 				xid, = yield db.DoFn("select id from xattr_name where name=${name}", name=name)
 			except NoData:
+				if not add:
+					self._xattr_id[name] = None
+					returnValue( None )
 				xid = yield db.Do("insert into xattr_name(name) values(${name})", name=name)
 
 			self._xattr_name[xid] = name
