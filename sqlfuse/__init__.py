@@ -44,7 +44,7 @@ from sqlfuse.options import options
 from sqlmix import Db,NoData
 
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
-inode_xattrs = inode_attrs.union(frozenset("copies".split()))
+inode_xattrs = inode_attrs.union(frozenset("copies symlink".split()))
 
 import datetime
 def nowtuple():
@@ -201,8 +201,11 @@ class SqlInode(Inode):
 		if len(name) == 0 or len(name) > self.filesystem.info.namelen:
 			raise IOError(errno.ENAMETOOLONG)
 		now,now_ns = nowtuple()
-		if rdev is None: rdev=0
-		inum = yield db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,symlink) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${symlink})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,symlink=symlink)
+		if rdev is None: rdev=0 # not NULL
+		if symlink: size=len(symlink)
+		else: size=0
+
+		inum = yield db.Do("insert into inode (mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,symlink,size) values(${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${symlink},${size})", mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,symlink=symlink,size=size)
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
 		
 		inode = SqlInode(self.filesystem,inum)
@@ -255,15 +258,17 @@ class SqlInode(Inode):
 
 	@inlineCallbacks
 	def symlink(self, name, target, ctx=None):
+		if len(target) > self.filesystem.info.symlinklen:
+			raise IOError(errno.EDIR,"Cannot link a directory")
 		with self.filesystem.db() as db:
-			inode = yield self._new_inode(db,name,stat.S_IFLNK|(0o777&~ctx.umask) ,ctx,symlink=target)
+			inode = yield self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,symlink=target)
 		returnValue( inode )
 
 	@inlineCallbacks
 	def link(self, oldnode,target, ctx=None):
 		with self.filesystem.db() as db:
 			if stat.S_ISDIR(oldnode['mode']):
-				raise IOError(errno.EISDIR,"Cannot link a directory")
+				raise IOError(errno.ENAMETOOLONG,"symlink entry too long")
 			res = yield self._link(oldnode,target, ctx=ctx,db=db)
 		returnValue( res )
 
