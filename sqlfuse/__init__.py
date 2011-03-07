@@ -202,7 +202,7 @@ class SqlInode(Inode):
 		# opens its own database connection and therefore must be outside
 		# the with block
 		yield res.open()
-		returnValue(res)
+		returnValue( (inode, res) )
 
 	@inlineCallbacks
 	def _new_inode(self, db, name,mode,ctx=None,rdev=None,target=None):
