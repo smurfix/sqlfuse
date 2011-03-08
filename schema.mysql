@@ -117,7 +117,7 @@ CREATE TABLE `root` (
   `nblocks` bigint(20) unsigned not null default '0',
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
-  KEY `fk_root_inode` (`inode`),
+  UNIQUE KEY `inode` (`inode`),
   CONSTRAINT `fk_root_inode` FOREIGN KEY (`inode`) REFERENCES `inode` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 insert into `root`(`id`,`inode`,`name`) values(1,1,'master');

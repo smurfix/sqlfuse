@@ -10,8 +10,6 @@
 
 from __future__ import division, print_function, absolute_import
 
-DBVERSION = "0.1"
-
 BLOCKSIZE = 4096
 
 from twisted.internet import reactor

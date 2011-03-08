@@ -16,6 +16,7 @@ from sqlmix import Db,NoData
 from sqlfuse.options import options
 from sqlfuse.range import Range
 from datetime import datetime,timedelta
+import sys
 
 typ = {
 	"n":"new",
@@ -46,7 +47,7 @@ def node_info(db,node_id):
 	d = db.DoFn("select * from node where id=${id}",id=node_id, _dict=1)
 	for f in "root name files".split():
 		yield (f,d[f])
-	for ch,ta,tb,t in db.DoSelect("select count(*),min(id),max(id),typ from event where node=${node} group by typ", node=node_id):
+	for ch,ta,tb,t in db.DoSelect("select count(*),min(id),max(id),typ from event where node=${node} group by typ", node=node_id, _empty=True):
 		yield ("nchanges",typ[t],ch)
 		yield ("change","first",ta)
 		yield ("change","last",tb)
@@ -171,7 +172,6 @@ def main():
 #* These commands are not implemented yet.
 #"""
 	opt=options("mode")
-	print(opt)
 	db = Db(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
 
 	if opt.mode == "info":
@@ -192,8 +192,17 @@ def main():
 					report(node_info(db,id))
 			else: # list
 				if opt.root:
-					for name, in db.DoSelect("select node.name from node,root where root.name=${root} and node.root=root.id order by name",root=opt.root):
-						print(name)
+					try:
+						root, = db.DoFn("select id from root where name=${root}", root=opt.root)
+					except NoData:
+						print("No node named '%s' exists" % (opt.root,),file=sys.stderr)
+						sys.exit(1)
+					try:
+						for name, in db.DoSelect("select node.name from node,root where root.name=${root} and node.root=root.id order by name",root=opt.root):
+							print(name)
+					except NoData:
+						print("This root does not have any nodes.",file=sys.stderr)
+						
 				else:
 					for nodename,rootname in db.DoSelect("select node.name,root.name from node,root where node.root=root.id order by root.name,node.name"):
 						print(nodename,rootname)
@@ -210,8 +219,85 @@ def main():
 			report(event_info(db,opt.event_id))
 		else:
 			raise NotImplementedError("I don't know how to do that.")
+
+	elif opt.mode == "add":
+		if opt.mode2 == "root":
+			inode = db.Do("insert into inode (root) values(1)")
+			root = db.Do("insert into root(name,inode) values(${name},${inode})", name=opt.name,inode=inode)
+			db.Do("update inode set root=${root} where id=${inode}", inode=inode, root=root)
+			db.commit()
+		elif opt.mode2 == "node":
+			try:
+				r, = db.DoFn("select id from root where name=${root}",root=opt.root)
+			except NoData:
+				print("No root named '%s' exists"%(opt.root,),file=sys.stderr)
+				sys.exit(1)
+			try:
+				db.DoFn("select id from node where name=${node}", node=opt.name)
+			except NoData:
+				pass
+			else:
+				print("A node named '%s' already exists",file=sys.stderr)
+				sys.exit(1)
+			n = db.Do("insert into node(name,root,files) values(${node},${root},${files})", node=opt.name,root=r, files=opt.files)
+			db.commit()
+		else:
+			raise NotImplementedError("I don't know how to do that.")
+
+	elif opt.mode == "del":
+		if opt.mode2 == "root":
+			root,inode = db.DoFn("select id,inode from root where name=${root}", root=opt.name)
+			c, = db.DoFn("select count(*) from node where root=${root}", root=root)
+			if c:
+				print("This root still has nodes and thus cannot be deleted.", file=sys.stderr)
+				sys.exit(1)
+			c, = db.DoFn("select count(*) from inode where root=${root}", root=root)
+			if c > 1:
+				print("This root still has files and thus cannot be deleted.", file=sys.stderr)
+				sys.exit(1)
+			if root == 1:
+				print("This is the system root and thus cannot be deleted.", file=sys.stderr)
+				print("You may, however, rename it.", file=sys.stderr)
+				sys.exit(1)
+
+			# This works around a MySQL bug where consistency is checked
+			# immediately, not after a COMMIT as the SQL standard says
+			# … which is also the main reason we need a system root in the
+			# first place.
+			db.Do("update inode set root=1 where id=${inode}",inode=inode)
+
+			db.Do("delete from root where id=${root}",root=root)
+			db.Do("delete from inode where id=${inode}",inode=inode)
+		elif opt.mode2 == "node":
+			node,root,rname = db.DoFn("select node.id,node.root,root.name from node,root where node.name=${node} and root.id=node.root", node=opt.name)
+			db.Do("delete from node where id=${node}", node=node)
+			c, = db.DoFn("select count(*) from node where root=${root}", root=root)
+			if not c:
+				print("Warning: root %d '%s' does not have any more nodes!" % (root,rname))
+		else:
+			raise NotImplementedError("I don't know how to do that.")
+	elif opt.mode == "update":
+		done = 0
+		if opt.mode2 == "root":
+			root, = db.DoFn("select id from root where name=${root}", root=opt.name)
+			if opt.newname:
+				db.Do("update root set name=${name} where id=${root}", root=root, name=opt.newname)
+				done += 1
+		elif opt.mode2 == "node":
+			node, = db.DoFn("select id from node where name=${node}", node=opt.name)
+			if opt.newname:
+				db.Do("update node set name=${name} where id=${node}", node=node, name=opt.newname)
+				done += 1
+			if opt.files:
+				db.Do("update node set files=${files} where id=${node}", node=node, files=opt.files)
+				done += 1
+		else:
+			raise NotImplementedError("I don't know how to do that.")
+		if not done:
+			print("Nothing to do.")
 	else:
 		raise NotImplementedError("I don't yet know how to do that.")
+	db.commit()
 
 if __name__ == '__main__':
 	main()
