@@ -169,11 +169,20 @@ class SqlInode(Inode):
 
 	@inlineCallbacks
 	def _lookup(self, name, db):
-		try:
-			inum = yield db.DoFn("select inode from tree where parent=${inode} and name=${name}", inode=self.nodeid, name=name)
-			inum, = inum
-		except NoData:
-			raise IOError(errno.ENOENT, "%d:%s" % (self.nodeid,name))
+		if name == ".":
+			returnValue( self )
+		elif name == "..":
+			if self.nodeid == self.filesystem.inum:
+				returnValue( self )
+			try:
+				inum, = yield db.DoFn("select parent from tree where inode=${inode} limit 1", inode=self.nodeid)
+			except NoData:
+				raise IOError(errno.ENOENT, "%d:%s" % (self.nodeid,name))
+		else:
+			try:
+				inum, = yield db.DoFn("select inode from tree where parent=${inode} and name=${name}", inode=self.nodeid, name=name)
+			except NoData:
+				raise IOError(errno.ENOENT, "%d:%s" % (self.nodeid,name))
 		res = SqlInode(self.filesystem,inum)
 		yield res._load(db)
 		returnValue( res )
@@ -950,6 +959,17 @@ class SqlDir(Dir):
 		# Fudge the value a bit so that there's no cycle.
 		tree = self.node.filesystem
 		db = tree.db
+		if not offset:
+			callback(".",self.node.nodeid,self.node.mode,0)
+			if self.node.nodeid == self.node.filesystem.inum:
+				callback("..",self.node.nodeid,self.node.mode,0)
+			else:
+				try:
+					inum = yield db.DoFn("select '..',inode.id,inode.mode,0 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
+				except NoData:
+					pass
+				else:
+					callback(*inum)
 		with tree.db() as db:
 			yield db.DoSelect("select tree.name,inode.id,inode.mode,inode.id from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset, _empty=True,_store=True, _callback=callback)
 		returnValue( None )
