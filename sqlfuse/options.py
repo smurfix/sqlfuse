@@ -155,6 +155,20 @@ def options(mode=None,args=None):
 		Baddroot.set_defaults(mode2="root")
 		Baddroot.add_argument("name", help="Root name")
 
+		Baddupdater = Badd.add_parser("updater",help="file copying method")
+		Baddupdater.set_defaults(mode2="updater")
+		Baddupdater.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
+		Baddupdater.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
+		Baddupdater.add_argument("src", help="source node")
+		Baddupdater.add_argument("dest", help="destination node")
+		Baddupdater.add_argument("distance", help="number measuring the copy's efficiency; smaller=better")
+
+		Baum = Baddupdater.add_subparsers(title='methods', help='data copying methods')
+		BaumNative = Baum.add_parser("native",help="sqlfuse-to-sqlfuse file transfer")
+		BaumNative.set_defaults(method="native")
+		BaumNative.add_argument("address", help="IP address to use to reach the source")
+		BaumNative.add_argument("port", nargs='?', type=int, help="port to use, to connect to the source")
+
 
 		Bdel = Adel.add_subparsers(title='types', help='data type')
 		
@@ -166,6 +180,10 @@ def options(mode=None,args=None):
 		Bdelroot.set_defaults(mode2="root")
 		Bdelroot.add_argument("name", help="Root name")
 
+		Bdelupdater = Bdel.add_parser("updater",help="file copying method")
+		Bdelupdater.set_defaults(mode2="updater")
+		Bdelupdater.add_argument("id", type=int, help="updater ID")
+
 
 		Bupdate = Aupdate.add_subparsers(title='types', help='data type')
 
@@ -175,6 +193,13 @@ def options(mode=None,args=None):
 		Bupdatenode.add_argument("--name", dest="newname", help="New name")
 		Bupdatenode.add_argument("--storage", dest="files", help="New storage path")
 		Bupdatenode.add_argument("--secret", action='store_true', dest="secret", help="Reset the node-specific secret")
+
+		Bupdateupdater = Bupdate.add_parser("updater",help="file copying method")
+		Bupdateupdater.set_defaults(mode2="updater")
+		Bupdateupdater.add_argument("id", type=int, help="updater ID")
+		Bupdateupdater.add_argument("--distance", dest="distance", help="number measuring the copy's efficiency; smaller=better")
+		Bupdateupdater.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
+		Bupdateupdater.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
 
 		Bupdateroot = Bupdate.add_parser("root",help="hierarchy root")
 		Bupdateroot.set_defaults(mode2="root")
@@ -195,6 +220,13 @@ def options(mode=None,args=None):
 		Blistprogress.add_argument("--src", dest="src", help="limit to copies from this node")
 		Blistprogress.add_argument("--dest", dest="dest", help="limit to copies to this node")
 		Blistprogress.add_argument("--inode", dest="inode", help="limit to copies of this inode")
+
+		Blistupdater = Blist.add_parser("updater",help="file copying method")
+		Blistupdater.set_defaults(mode2="updater")
+		Blistupdater.add_argument("id",nargs='?', type=int, help="updater ID (default: list all updaters)")
+		Blistupdater.add_argument("--src", dest="src", help="limit to copying from this node")
+		Blistupdater.add_argument("--dest", dest="dest", help="limit to copying to this node")
+		Blistupdater.add_argument("--method", dest="method", help="limit to copying with this method")
 
 		Blistroot = Blist.add_parser("root",help="hierarchy root")
 		Blistroot.set_defaults(mode2="root")

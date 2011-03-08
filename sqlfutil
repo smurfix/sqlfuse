@@ -58,6 +58,10 @@ def node_info(db,node_id):
 	for f in "root name files".split():
 		yield (f,d[f])
 	yield "secret",repr(d['secret'][0:7])+u'…'
+	for p, in db.DoSelect("select id from updater where src=${node}", node=node_id, _empty=1):
+		yield("updater","src",p)
+	for p, in db.DoSelect("select id from updater where dest=${node}", node=node_id, _empty=1):
+		yield("updater","dest",p)
 	for p, in db.DoSelect("select id from progress where src=${node}", node=node_id, _empty=1):
 		yield("progress","src",p)
 	for p, in db.DoSelect("select id from progress where dest=${node}", node=node_id, _empty=1):
@@ -143,6 +147,18 @@ def event_info(db,event_id):
 	except NoData: pass
 	else:
 		if nid: yield ("next","node","event",nid)
+
+def updater_info(db,pnr):
+	yield("updater","id",pnr)
+	d = db.DoFn("select * from updater where id=${pnr}",pnr=pnr, _dict=1)
+	for f in "src dest".split():
+		n, = db.DoFn("select name from node where id=${node}",node=d[f])
+		yield(f,n)
+	yield("distance",d['distance'])
+	yield("method",d['method'])
+	yield("args",d['args'])
+	yield("cache-only", 'no' if d['autocopy'] else 'yes')
+	
 
 def progress_info(db,pnr):
 	yield("progress","id",pnr)
@@ -274,6 +290,32 @@ def main():
 						report(progress_info(db,id))
 				except NoData:
 					print("No progress nodes found.", file=sys.stderr)
+		elif opt.mode2 == "updater":
+			if opt.id: # single node
+				try:
+					id,=db.DoFn("select id from updater where id=${id}",id=opt.id)
+				except NoData:
+					raise # TODO reasonable error message
+				else:
+					report(updater_info(db,id))
+			else: # list
+				f=[]; g={}
+				for k in "src dest method".split():
+					v = getattr(opt,k,None)
+					if v:
+						if k in ("src","dest"):
+							v,=db.DoFn("select id from node where name=${name}", name=v)
+						f.append("%s=${%s}" % (k,k))
+						g[k]=v
+				if f:
+					f=" where "+" and ".join(f)
+				else:
+					f=""
+				try:
+					for id, in db.DoSelect("select id from updater"+f,**g):
+						report(updater_info(db,id))
+				except NoData:
+					print("No progress nodes found.", file=sys.stderr)
 		elif opt.mode2 == "root":
 			if opt.name:
 				root_id,=db.DoFn("select id from root where name=${name}",name=opt.name)
@@ -310,6 +352,23 @@ def main():
 			n = db.Do("insert into node(name,root,files,secret) values(${node},${root},${files},${secret})", node=opt.name,root=r, files=opt.files, secret=open("/dev/urandom",'r').read(int(info.secretlen)))
 			db.Do("insert into event(node,inode,typ) values(${node},${inode},'i')", inode=inum,node=n)
 			db.commit()
+		elif opt.mode2 == "updater":
+			try:
+				sid, = db.DoFn("select id from node where name=${name}", name=opt.src)
+			except NoData:
+				print("No node named '%s' exists"%(opt.src,),file=sys.stderr)
+				sys.exit(1)
+			try:
+				did, = db.DoFn("select id from node where name=${name}", name=opt.dest)
+			except NoData:
+				print("No node named '%s' exists"%(opt.dest,),file=sys.stderr)
+				sys.exit(1)
+			args = []
+			if opt.method == 'native':
+				args.append(opt.address)
+				if opt.port is not None:
+					args.append(opt.port)
+			db.Do("insert into updater(src,dest,distance,method,args) values(${src},${dest},${distance},${method},${args})", src=sid,dest=did,distance=opt.distance,method=opt.method,args=repr(args))
 		else:
 			raise NotImplementedError("I don't know how to do that.")
 
@@ -343,6 +402,8 @@ def main():
 			c, = db.DoFn("select count(*) from node where root=${root}", root=root)
 			if not c:
 				print("Warning: root %d '%s' does not have any more nodes!" % (root,rname))
+		elif opt.mode2 == "updater":
+			db.Do("delete from updater where id=${id}", id=opt.id)
 		else:
 			raise NotImplementedError("I don't know how to do that.")
 	elif opt.mode == "update":
@@ -362,6 +423,13 @@ def main():
 				done += 1
 			if opt.secret:
 				db.Do("update node set secret=${secret} where id=${node}", node=node, secret=open("/dev/urandom",'r').read(int(info.secretlen)))
+				done += 1
+		elif opt.mode2 == "updater":
+			if opt.distance:
+				db.Do("update updater set distance=${distance} where id=${id}", id=opt.id, distance=opt.distance)
+				done += 1
+			if opt.cache is not None:
+				db.Do("update updater set autocopy=${copy} where id=${id}", id=opt.id, copy= not opt.cache)
 				done += 1
 		else:
 			raise NotImplementedError("I don't know how to do that.")
