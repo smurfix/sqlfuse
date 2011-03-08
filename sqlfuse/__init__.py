@@ -169,6 +169,7 @@ class SqlInode(Inode):
 
 	@inlineCallbacks
 	def _lookup(self, name, db):
+		self.do_atime(is_dir=2)
 		if name == ".":
 			returnValue( self )
 		elif name == "..":
@@ -371,6 +372,17 @@ class SqlInode(Inode):
 	def __delete__(self):
 		assert self.write_timer is None
 		
+	def do_atime(self, is_dir=0):
+		"""\
+			Rules for atime update.
+			"""
+		if is_dir:
+			if self.filesystem.diratime < is_dir: return
+		else:
+			if not self.filesystem.atime: return
+			if self.filesystem.atime == 1 and self.atime > self.mtime: return
+		self.atime = nowtuple()
+
 	def _file_path(self):
 		"""\
 			Return the path to my backing-store file.
@@ -448,6 +460,7 @@ class SqlInode(Inode):
 		returnValue( None )
 
 	def readlink(self, ctx=None):
+		self.do_atime()
 		return self.target
 
 	# ___ supporting stuff ___
@@ -828,6 +841,7 @@ class SqlFile(File):
 	"""Operations on open files.
 	"""
 	mtime = None
+
 	def __init__(self, node,mode):
 		"""Open the file. Also remember that the inode is in use
 		so that delete calls get delayed.
@@ -855,6 +869,7 @@ class SqlFile(File):
 	@inlineCallbacks
 	def read(self, offset,length, ctx=None):
 		"""Read file, updating atime"""
+		self.node.do_atime()
 		#self.node.atime = nowtuple()
 		def _read():
 			with self.lock:
@@ -965,6 +980,7 @@ class SqlDir(Dir):
 		# We use the actual inode as offset, except for . and ..
 		# Fudge the value a bit so that there's no cycle.
 		tree = self.node.filesystem
+		self.node.do_atime(is_dir=1)
 		db = tree.db
 		if not offset:
 			callback(".",self.node.nodeid,self.node.mode,0)
@@ -1013,6 +1029,12 @@ class SqlFuse(FileSystem):
 	rooter = DummyRooter()
 	record = DummyRecorder()
 	db = DummyQuit()
+
+	# 0: no atime; 1: only if <mtime; 2: always
+	atime = 0
+
+	# 0: no atime: 1: when reading; 2: also when traversing
+	diratime = 0
 
 	def __init__(self,*a,**k):
 		self._slot = {}
