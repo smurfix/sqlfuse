@@ -220,6 +220,7 @@ class SqlInode(Inode):
 
 		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size})", root=self.filesystem.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size)
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
+		db.call_committed(self.filesystem.rooter.d_inode,1)
 		
 		inode = SqlInode(self.filesystem,inum)
 		yield inode._load(db)
@@ -261,9 +262,9 @@ class SqlInode(Inode):
 	def rmdir(self, name, ctx=None):
 		with self.filesystem.db() as db:
 			inode = yield self._lookup(name,db)
-			if not stat.S_ISDIR(mode):
+			if not stat.S_ISDIR(self.mode):
 				raise IOError(errno.ENOTDIR)
-			cnt, = yield self.db.DoFn("select count(*) from tree where parent=${inode}", inode=inode.nodeid)
+			cnt, = yield db.DoFn("select count(*) from tree where parent=${inode}", inode=inode.nodeid)
 			if cnt:
 				raise IOError(errno.ENOTEMPTY)
 			db.call_committed(self.filesystem.rooter.d_dir,-1)
@@ -303,9 +304,9 @@ class SqlInode(Inode):
 		returnValue( inode )
 
 	@inlineCallbacks
-	def mkdir(self, name, mode, ctx=None):
+	def mkdir(self, name, mode,umask, ctx=None):
 		with self.filesystem.db() as db:
-			inode = yield self._new_inode(db,name,(mode&0o7777)|stat.S_IFDIR,ctx)
+			inode = yield self._new_inode(db,name,(mode&0o7777&~umask)|stat.S_IFDIR,ctx)
 			db.call_committed(self.filesystem.rooter.d_dir,1)
 		returnValue( inode )
 
@@ -329,19 +330,26 @@ class SqlInode(Inode):
 			self.write_timer.cancel()
 			self.write_timer = None
 
-		size, = yield db.DoFn("select size from inode where id=${inode}", inode=self.nodeid)
 		entries = []
 		yield db.DoSelect("select parent from tree where inode=${inode}", inode=self.nodeid, _empty=True, _callback=entries.append)
-		for p, in entries:
+		print("EEE",entries)
+		for p in entries:
 			p = SqlInode(self.filesystem,p)
 			yield p._load(db)
 			p.mtime = nowtuple()
 		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
-		if stat.S_ISREG(self.mode):
+		nnodes, = yield db.DoFn("select count(*) from node where root=${root}", root=self.filesystem.root_id)
+		if nnodes == 1:
+			yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
+			yield db.call_committed(self.filesystem.rooter.d_inode,-1)
+			if stat.S_ISREG(self.mode):
+				yield db.call_committed(self.filesystem.rooter.d_size,self.size,0)
+		elif stat.S_ISREG(self.mode):
 			self.filesystem.record.delete(self)
-		#yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
-		yield db.call_committed(self.filesystem.rooter.d_inode,-1)
-		yield db.call_committed(self.filesystem.rooter.d_size,size,0)
+
+		if stat.S_ISREG(self.mode):
+			try: yield deferToThread(os.unlink,self._file_path())
+			except EnvironmentError: pass
 		self.nodeid = None
 		returnValue( None )
 
