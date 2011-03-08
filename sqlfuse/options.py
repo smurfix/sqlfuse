@@ -118,6 +118,10 @@ def options(mode=None,args=None):
 		help="SQL database name")
 	opt("dbtype", dest="dbtype", default=None,
 		help="SQL database type")
+	opt("atime", dest="atime", choices=('no','mtime','yes'), default=None,
+		help="file atime options")
+	opt("diratime", dest="diratime", choices=('no','read','access'), default=None,
+		help="directory atime options")
 
 	if mode == "mode":
 		A = p.add_subparsers(title='subcommands', help='main command modes')

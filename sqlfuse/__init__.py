@@ -1031,7 +1031,7 @@ class SqlFuse(FileSystem):
 	db = DummyQuit()
 
 	# 0: no atime; 1: only if <mtime; 2: always
-	atime = 0
+	atime = 1
 
 	# 0: no atime: 1: when reading; 2: also when traversing
 	diratime = 0
@@ -1244,10 +1244,12 @@ class SqlFuse(FileSystem):
 		self._update.add(inode)
 		self.syncer.trigger()
 
-	def init(self):
+	def init(self, opt):
 		"""\
 		Last step before running the file system mainloop.
 		"""
+		if opt.atime: self.atime = {'no':0,'mtime':1,'yes':2}[opt.atime]
+		if opt.diratime: self.diratime = {'no':0,'read':1,'access':2}[opt.diratime]
 		self.rooter = RootUpdater(self)
 		self.rooter.start()
 		self.record = Recorder(self)

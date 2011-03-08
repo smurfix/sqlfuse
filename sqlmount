@@ -35,7 +35,7 @@ sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 			global h
 			h = Handler(logfile=None)
 			h.mount(fs,opt.mountpoint)
-			fs.init()
+			fs.init(opt)
 		d.addCallback(did_init)
 		def did_error(e):
 			print("Error:",e,file=sys.stderr)
