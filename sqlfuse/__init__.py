@@ -982,18 +982,18 @@ class SqlDir(Dir):
 		tree = self.node.filesystem
 		self.node.do_atime(is_dir=1)
 		db = tree.db
-		if not offset:
-			callback(".",self.node.nodeid,self.node.mode,0)
-			if self.node.nodeid == self.node.filesystem.inum:
-				callback("..",self.node.nodeid,self.node.mode,0)
-			else:
-				try:
-					inum = yield db.DoFn("select '..',inode.id,inode.mode,0 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
-				except NoData:
-					pass
-				else:
-					callback(*inum)
 		with tree.db() as db:
+			if not offset:
+				callback(".",self.node.nodeid,self.node.mode,0)
+				if self.node.nodeid == self.node.filesystem.inum:
+					callback("..",self.node.nodeid,self.node.mode,0)
+				else:
+					try:
+						inum = yield db.DoFn("select '..',inode.id,inode.mode,0 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
+					except NoData:
+						pass
+					else:
+						callback(*inum)
 			yield db.DoSelect("select tree.name,inode.id,inode.mode,inode.id from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset, _empty=True,_store=True, _callback=callback)
 		returnValue( None )
 
