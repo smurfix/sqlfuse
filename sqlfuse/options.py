@@ -142,7 +142,9 @@ def options(mode=None,args=None):
 		Aupdate = A.add_parser("update",help="update some metadata")
 		Aupdate.set_defaults(mode="update")
 
+
 		Badd = Aadd.add_subparsers(title='types', help='data type')
+
 		Baddnode = Badd.add_parser("node",help="directory access point")
 		Baddnode.set_defaults(mode2="node")
 		Baddnode.add_argument("name", help="Node name")
@@ -153,7 +155,9 @@ def options(mode=None,args=None):
 		Baddroot.set_defaults(mode2="root")
 		Baddroot.add_argument("name", help="Root name")
 
+
 		Bdel = Adel.add_subparsers(title='types', help='data type')
+		
 		Bdelnode = Bdel.add_parser("node",help="directory access point")
 		Bdelnode.set_defaults(mode2="node")
 		Bdelnode.add_argument("name", help="Node name")
@@ -162,7 +166,9 @@ def options(mode=None,args=None):
 		Bdelroot.set_defaults(mode2="root")
 		Bdelroot.add_argument("name", help="Root name")
 
+
 		Bupdate = Aupdate.add_subparsers(title='types', help='data type')
+
 		Bupdatenode = Bupdate.add_parser("node",help="directory access point")
 		Bupdatenode.set_defaults(mode2="node")
 		Bupdatenode.add_argument("name", help="Node name")
@@ -175,11 +181,20 @@ def options(mode=None,args=None):
 		Bupdateroot.add_argument("name", help="Root name")
 		Bupdateroot.add_argument("--name", dest="newname", help="New name")
 
+
 		Blist = Alist.add_subparsers(title='types', help='data type')
+
 		Blistnode = Blist.add_parser("node",help="directory access point")
 		Blistnode.set_defaults(mode2="node")
 		Blistnode.add_argument("name",nargs='?', help="Node name (default: list all nodes)")
 		Blistnode.add_argument("--root", dest="root", help="limit to this root (default: list all roots' nodes)")
+
+		Blistprogress = Blist.add_parser("progress",help="file copy in progress")
+		Blistprogress.set_defaults(mode2="progress")
+		Blistprogress.add_argument("id",nargs='?', type=int, help="progress ID (default: list all progress nodes)")
+		Blistprogress.add_argument("--src", dest="src", help="limit to copies from this node")
+		Blistprogress.add_argument("--dest", dest="dest", help="limit to copies to this node")
+		Blistprogress.add_argument("--inode", dest="inode", help="limit to copies of this inode")
 
 		Blistroot = Blist.add_parser("root",help="hierarchy root")
 		Blistroot.set_defaults(mode2="root")

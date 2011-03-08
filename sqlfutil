@@ -58,6 +58,10 @@ def node_info(db,node_id):
 	for f in "root name files".split():
 		yield (f,d[f])
 	yield "secret",repr(d['secret'][0:7])+u'…'
+	for p, in db.DoSelect("select id from progress where src=${node}", node=node_id, _empty=1):
+		yield("progress","src",p)
+	for p, in db.DoSelect("select id from progress where dest=${node}", node=node_id, _empty=1):
+		yield("progress","dest",p)
 	for ch,ta,tb,t in db.DoSelect("select count(*),min(id),max(id),typ from event where node=${node} group by typ", node=node_id, _empty=True):
 		yield ("nchanges",typ[t],ch)
 		yield ("change","first",ta)
@@ -106,6 +110,8 @@ def inode_info(db,inum):
 
 	for i,n in db.DoSelect("select parent,name from tree where inode=${inode}", inode=inum, _empty=1):
 		yield("parent",i,repr(n.encode("utf-8")))
+	for p, in db.DoSelect("select id from progress where inode=${inode}", inode=inum, _empty=1):
+		yield("progress",p)
 
 def event_info(db,event_id):
 	yield ("event","ID",event_id)
@@ -137,6 +143,18 @@ def event_info(db,event_id):
 	except NoData: pass
 	else:
 		if nid: yield ("next","node","event",nid)
+
+def progress_info(db,pnr):
+	yield("progress","id",pnr)
+	d = db.DoFn("select * from progress where id=${pnr}",pnr=pnr, _dict=1)
+	for f in "src dest".split():
+		n, = db.DoFn("select name from node where id=${node}",node=d[f])
+		yield(f,n)
+	yield('inode',d['inode'])
+	r = d["range"]
+	if r:
+		r = Range(r)
+		yield("range",str(r))
 
 
 def main():
@@ -224,6 +242,32 @@ def main():
 				else:
 					for nodename,rootname in db.DoSelect("select node.name,root.name from node,root where node.root=root.id order by root.name,node.name"):
 						print(nodename,rootname)
+		elif opt.mode2 == "progress":
+			if opt.id: # single node
+				try:
+					id,=db.DoFn("select id from progress where id=${id}",id=opt.id)
+				except NoData:
+					raise # TODO reasonable error message
+				else:
+					report(progress_info(db,id))
+			else: # list
+				f=[]; g={}
+				for k in "src dest inode".split():
+					v = getattr(opt,k,None)
+					if v:
+						if k in ("src","dest"):
+							v,=db.DoFn("select id from node where name=${name}", name=v)
+						f.append("%s=${%s}" % (k,k))
+						g[k]=v
+				if f:
+					f=" where "+" and ".join(f)
+				else:
+					f=""
+				try:
+					for id, in db.DoSelect("select id from progress"+f,**g):
+						report(progress_info(db,id))
+				except NoData:
+					print("No progress nodes found.", file=sys.stderr)
 		elif opt.mode2 == "root":
 			if opt.name:
 				root_id,=db.DoFn("select id from root where name=${name}",name=opt.name)
