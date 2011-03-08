@@ -18,12 +18,15 @@ from sqlfuse.range import Range
 from datetime import datetime,timedelta
 import sys
 
+DBVERSION = "0.4"
+
 typ = {
 	"n":"new",
 	"c":"write",
 	"f":"finish",
 	"d":"delete",
 	"i":"init",
+	"s":"sync",
 	}
 def report(seq):
 	for k in seq:
@@ -42,11 +45,19 @@ def format_time(s,ns):
 			v = v.strftime("%F %T")
 	return v
 
+class Info(object):
+	def __init__(self,db):
+		def cb(n,v):
+			setattr(self,n,v)
+		db.DoSelect("select name,value from `info`", _callback=cb)
+
+
 def node_info(db,node_id):
 	yield ("node","ID",node_id)
 	d = db.DoFn("select * from node where id=${id}",id=node_id, _dict=1)
 	for f in "root name files".split():
 		yield (f,d[f])
+	yield "secret",repr(d['secret'][0:7])+u'…'
 	for ch,ta,tb,t in db.DoSelect("select count(*),min(id),max(id),typ from event where node=${node} group by typ", node=node_id, _empty=True):
 		yield ("nchanges",typ[t],ch)
 		yield ("change","first",ta)
@@ -179,6 +190,8 @@ def main():
 	opt=options("mode")
 	db = Db(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
 
+	info=Info(db)
+
 	if opt.mode == "info":
 		node_id,root_id = db.DoFn("select id,root from node where name=${name}", name=opt.node)
 		report(node_info(db,node_id))
@@ -233,7 +246,7 @@ def main():
 			db.commit()
 		elif opt.mode2 == "node":
 			try:
-				r, = db.DoFn("select id from root where name=${root}",root=opt.root)
+				r,inum = db.DoFn("select id,inode from root where name=${root}",root=opt.root)
 			except NoData:
 				print("No root named '%s' exists"%(opt.root,),file=sys.stderr)
 				sys.exit(1)
@@ -244,7 +257,8 @@ def main():
 			else:
 				print("A node named '%s' already exists",file=sys.stderr)
 				sys.exit(1)
-			n = db.Do("insert into node(name,root,files) values(${node},${root},${files})", node=opt.name,root=r, files=opt.files)
+			n = db.Do("insert into node(name,root,files,secret) values(${node},${root},${files},${secret})", node=opt.name,root=r, files=opt.files, secret=open("/dev/urandom",'r').read(int(info.secretlen)))
+			db.Do("insert into event(node,inode,typ) values(${node},${inode},'i')", inode=inum,node=n)
 			db.commit()
 		else:
 			raise NotImplementedError("I don't know how to do that.")
@@ -295,6 +309,9 @@ def main():
 				done += 1
 			if opt.files:
 				db.Do("update node set files=${files} where id=${node}", node=node, files=opt.files)
+				done += 1
+			if opt.secret:
+				db.Do("update node set secret=${secret} where id=${node}", node=node, secret=open("/dev/urandom",'r').read(int(info.secretlen)))
 				done += 1
 		else:
 			raise NotImplementedError("I don't know how to do that.")

@@ -168,6 +168,7 @@ def options(mode=None,args=None):
 		Bupdatenode.add_argument("name", help="Node name")
 		Bupdatenode.add_argument("--name", dest="newname", help="New name")
 		Bupdatenode.add_argument("--storage", dest="files", help="New storage path")
+		Bupdatenode.add_argument("--secret", action='store_true', dest="secret", help="Reset the node-specific secret")
 
 		Bupdateroot = Bupdate.add_parser("root",help="hierarchy root")
 		Bupdateroot.set_defaults(mode2="root")

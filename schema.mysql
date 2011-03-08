@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.3.1');
+insert into info(name,value) values('version','0.4');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -134,6 +134,7 @@ CREATE TABLE `node` (
   `root` int(10) unsigned NOT NULL, -- my root
   `name` varchar(255) NOT NULL,
   `files` varchar(1024) NOT NULL, -- local file system path
+  `secret` binary(64) NOT NULL, -- secret key for authorisation of peer nodes
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
   constraint `fk_node_root` foreign key(`root`) references `root`(`id`) on delete cascade
@@ -141,6 +142,7 @@ CREATE TABLE `node` (
 insert into `node`(`id`,`root`,`name`,`files`) values(1,1,'default','/tmp/sqlmount');
 insert into info(name,value) values('nodenamelen','255');
 insert into info(name,value) values('nodepathlen','1024');
+insert into info(name,value) values('secretlen','64');
 
 -- 
 -- Remember file updates (and deletes). We need this to copy files.
@@ -212,7 +214,7 @@ CREATE TABLE `done` (
   `id` bigint(20) unsigned NOT NULL,
   `src` int(10) unsigned NOT NULL, -- the node I'm copying from
   `dest` int(10) unsigned NOT NULL, -- my ID
-  `event` bigint(20) unsigned NOT NULL, -- if NULL, no auto-copy will happen
+  `event` bigint(20) unsigned NOT NULL,
   PRIMARY KEY (`id`),
   KEY `fk_done_event` (`event`),
   KEY `fk_done_dest` (`dest`),
@@ -220,6 +222,26 @@ CREATE TABLE `done` (
   constraint `fk_done_src` foreign key(`src`) references `node`(`id`) on delete cascade,
   constraint `fk_done_dest` foreign key(`dest`) references `node`(`id`) on delete cascade,
   constraint `fk_done_event` foreign key(`event`) references `event`(`id`) on delete restrict
+) DEFAULT CHARSET=utf8;
+
+
+-- 
+-- record initial sync, as we may need to restart
+-- 
+DROP TABLE IF EXISTS `progress`;
+CREATE TABLE `progress` (
+  `id` bigint(20) unsigned NOT NULL,
+  `src` int(10) unsigned NOT NULL, -- the node I'm copying from
+  `dest` int(10) unsigned NOT NULL, -- my ID
+  `inode` bigint(20) unsigned NOT NULL, -- the data I'm copying
+  `range` varbinary(1023) NULL, -- what's still open?
+  PRIMARY KEY (`id`),
+  KEY `fk_progress_inode` (`inode`),
+  KEY `fk_progress_dest` (`dest`),
+  KEY `fk_progress_src` (`src`),
+  constraint `fk_progress_src` foreign key(`src`) references `node`(`id`) on delete cascade,
+  constraint `fk_progress_dest` foreign key(`dest`) references `node`(`id`) on delete cascade,
+  constraint `fk_progress_inode` foreign key(`inode`) references `inode`(`id`) on delete restrict
 ) DEFAULT CHARSET=utf8;
 
 

@@ -11,7 +11,7 @@ from __future__ import division, print_function, absolute_import
 
 __all__ = ["SqlFuse"]
 
-DBVERSION = "0.3.1"
+DBVERSION = "0.4"
 
 BLOCKSIZE = 4096
 
