@@ -226,6 +226,7 @@ class SqlInode(Inode):
 		if target: size=len(target)
 		else: size=0
 		self.mtime = nowtuple()
+		self.size += len(name)+1
 
 		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size})", root=self.filesystem.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size)
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
@@ -265,6 +266,7 @@ class SqlInode(Inode):
 			if not inode.defer_delete():
 				yield inode._remove(db)
 		self.mtime = nowtuple()
+		self.size -= len(name)+1
 		returnValue( None )
 
 	@inlineCallbacks
@@ -303,6 +305,7 @@ class SqlInode(Inode):
 		except Exception:
 			raise IOError(errno.EEXIST, "%d:%s" % (self.nodeid,target))
 		self.mtime = nowtuple()
+		self.size += len(target)+1
 		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
 			
 
@@ -340,11 +343,15 @@ class SqlInode(Inode):
 			self.write_timer = None
 
 		entries = []
-		yield db.DoSelect("select parent from tree where inode=${inode}", inode=self.nodeid, _empty=True, _callback=entries.append)
+		def app(parent,size):
+			entries.append((parent,name))
+		yield db.DoSelect("select parent,name from tree where inode=${inode}", inode=self.nodeid, _empty=True, _callback=app)
 		for p in entries:
+			p,name = p
 			p = SqlInode(self.filesystem,p)
 			yield p._load(db)
 			p.mtime = nowtuple()
+			p.size -= len(name)+1
 		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
 		nnodes, = yield db.DoFn("select count(*) from node where root=${root}", root=self.filesystem.root_id)
 		if nnodes == 1:
