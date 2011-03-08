@@ -148,7 +148,9 @@ def progress_info(db,pnr):
 	yield("progress","id",pnr)
 	d = db.DoFn("select * from progress where id=${pnr}",pnr=pnr, _dict=1)
 	for f in "src dest".split():
-		n, = db.DoFn("select name from node where id=${node}",node=d[f])
+		v = d[f]
+		if v is None: continue
+		n, = db.DoFn("select name from node where id=${node}",node=v)
 		yield(f,n)
 	yield('inode',d['inode'])
 	r = d["range"]

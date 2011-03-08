@@ -231,7 +231,7 @@ CREATE TABLE `done` (
 DROP TABLE IF EXISTS `progress`;
 CREATE TABLE `progress` (
   `id` bigint(20) unsigned NOT NULL,
-  `src` int(10) unsigned NOT NULL, -- the node I'm copying from
+  `src` int(10) unsigned NULL, -- the node I'm copying from; NULL if unknown
   `dest` int(10) unsigned NOT NULL, -- my ID
   `inode` bigint(20) unsigned NOT NULL, -- the data I'm copying
   `range` varbinary(1023) NULL, -- what's still open? NULL: whole file; empty: marker 'done'
