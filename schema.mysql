@@ -134,6 +134,8 @@ CREATE TABLE `node` (
   `root` int(10) unsigned NOT NULL, -- my root
   `name` varchar(255) NOT NULL,
   `files` varchar(1024) NOT NULL, -- local file system path
+  `address` varchar(64) NULL, -- IP address to listen on
+  `port` smallint(5) unsigned NULL default 50329, -- port to listen on
   `secret` binary(64) NOT NULL, -- secret key for authorisation of peer nodes
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),

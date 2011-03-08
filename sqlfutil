@@ -18,7 +18,7 @@ from sqlfuse.range import Range
 from datetime import datetime,timedelta
 import sys
 
-DBVERSION = "0.4"
+DBVERSION = "0.4.1"
 
 typ = {
 	"n":"new",
@@ -58,6 +58,10 @@ def node_info(db,node_id):
 	for f in "root name files".split():
 		yield (f,d[f])
 	yield "secret",repr(d['secret'][0:7])+u'…'
+	if d['port']:
+		if d['address']:
+			yield("address",d['address'])
+		yield("tcpport",d['port'])
 	for p, in db.DoSelect("select id from updater where src=${node}", node=node_id, _empty=1):
 		yield("updater","src",p)
 	for p, in db.DoSelect("select id from updater where dest=${node}", node=node_id, _empty=1):
@@ -366,9 +370,12 @@ def main():
 			args = []
 			if opt.method == 'native':
 				args.append(opt.address)
-				if opt.port is not None:
-					args.append(opt.port)
-			db.Do("insert into updater(src,dest,distance,method,args) values(${src},${dest},${distance},${method},${args})", src=sid,dest=did,distance=opt.distance,method=opt.method,args=repr(args))
+				if opt.tcpport is not None:
+					args.append(opt.tcpport)
+			uid = db.Do("insert into updater(src,dest,distance,method,args) values(${src},${dest},${distance},${method},${args})", src=sid,dest=did,distance=opt.distance,method=opt.method,args=repr(args))
+			if opt.cache is not None:
+				db.Do("update updater set autocopy=${copy} where id=${id}", id=uid, copy= not opt.cache)
+
 		else:
 			raise NotImplementedError("I don't know how to do that.")
 
@@ -415,6 +422,18 @@ def main():
 				done += 1
 		elif opt.mode2 == "node":
 			node, = db.DoFn("select id from node where name=${node}", node=opt.name)
+			if opt.address is not None:
+				if opt.address:
+					db.Do("update node set address=${address} where id=${node}", node=node, address=opt.address)
+				else:
+					db.Do("update node set address=NULL where id=${node}", node=node)
+				done += 1
+			if opt.tcpport is not None:
+				if opt.tcpport:
+					db.Do("update node set port=${port} where id=${node}", node=node, port=opt.tcpport)
+				else:
+					db.Do("update node set port=NULL where id=${node}", node=node)
+				done += 1
 			if opt.newname:
 				db.Do("update node set name=${name} where id=${node}", node=node, name=opt.newname)
 				done += 1

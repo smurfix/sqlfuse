@@ -157,8 +157,9 @@ def options(mode=None,args=None):
 
 		Baddupdater = Badd.add_parser("updater",help="file copying method")
 		Baddupdater.set_defaults(mode2="updater")
-		Baddupdater.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
-		Baddupdater.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
+		Bapg = Baddupdater.add_mutually_exclusive_group()
+		Bapg.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
+		Bapg.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
 		Baddupdater.add_argument("src", help="source node")
 		Baddupdater.add_argument("dest", help="destination node")
 		Baddupdater.add_argument("distance", help="number measuring the copy's efficiency; smaller=better")
@@ -167,7 +168,7 @@ def options(mode=None,args=None):
 		BaumNative = Baum.add_parser("native",help="sqlfuse-to-sqlfuse file transfer")
 		BaumNative.set_defaults(method="native")
 		BaumNative.add_argument("address", help="IP address to use to reach the source")
-		BaumNative.add_argument("port", nargs='?', type=int, help="port to use, to connect to the source")
+		BaumNative.add_argument("tcpport", nargs='?', type=int, help="port to use, to connect to the source")
 
 
 		Bdel = Adel.add_subparsers(title='types', help='data type')
@@ -193,13 +194,20 @@ def options(mode=None,args=None):
 		Bupdatenode.add_argument("--name", dest="newname", help="New name")
 		Bupdatenode.add_argument("--storage", dest="files", help="New storage path")
 		Bupdatenode.add_argument("--secret", action='store_true', dest="secret", help="Reset the node-specific secret")
+		Buna = Bupdatenode.add_mutually_exclusive_group()
+		Buna.add_argument("--address", help="local IP address for SQLfuse connections")
+		Buna.add_argument("--anyaddress", action='store_false',dest='address', help="accept SQLfuse connections on all local addresses")
+		Bung = Bupdatenode.add_mutually_exclusive_group()
+		Bung.add_argument("--tcpport", type=int, help="TCP port to accept SQLfuse connections on")
+		Bung.add_argument("--noport", action='store_false',dest='tcpport', help="do not accept SQLfuse connections")
 
 		Bupdateupdater = Bupdate.add_parser("updater",help="file copying method")
 		Bupdateupdater.set_defaults(mode2="updater")
 		Bupdateupdater.add_argument("id", type=int, help="updater ID")
 		Bupdateupdater.add_argument("--distance", dest="distance", help="number measuring the copy's efficiency; smaller=better")
-		Bupdateupdater.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
-		Bupdateupdater.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
+		Bupg = Bupdateupdater.add_mutually_exclusive_group()
+		Bupg.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
+		Bupg.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
 
 		Bupdateroot = Bupdate.add_parser("root",help="hierarchy root")
 		Bupdateroot.set_defaults(mode2="root")
