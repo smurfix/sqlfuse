@@ -332,7 +332,6 @@ class SqlInode(Inode):
 
 		entries = []
 		yield db.DoSelect("select parent from tree where inode=${inode}", inode=self.nodeid, _empty=True, _callback=entries.append)
-		print("EEE",entries)
 		for p in entries:
 			p = SqlInode(self.filesystem,p)
 			yield p._load(db)
