@@ -192,12 +192,12 @@ CREATE TABLE `uptodate` (
 -- 
 DROP TABLE IF EXISTS `updater`;
 CREATE TABLE `updater` (
-  `id` int(10) unsigned NOT NULL,
+  `id` int(10) unsigned NOT NULL auto_increment,
   `src` int(10) unsigned NOT NULL, -- the node I'm copying from
   `dest` int(10) unsigned NOT NULL, -- my ID
   `distance` tinyint(2) unsigned NOT NULL, -- how expensive is copying?
   `method` varchar(10) not null, -- some Python class or other
-  `source` varchar(1024) not null, -- some class-specific parameters
+  `args` varchar(1024) not null, -- some class-specific parameters
   `autocopy` bool not null default true, -- if false, only copy on demand
   PRIMARY KEY (`id`),
   KEY `fk_updater_dest` (`dest`),
@@ -211,7 +211,7 @@ CREATE TABLE `updater` (
 -- 
 DROP TABLE IF EXISTS `done`;
 CREATE TABLE `done` (
-  `id` bigint(20) unsigned NOT NULL,
+  `id` bigint(20) unsigned NOT NULL auto_increment,
   `src` int(10) unsigned NOT NULL, -- the node I'm copying from
   `dest` int(10) unsigned NOT NULL, -- my ID
   `event` bigint(20) unsigned NOT NULL,
@@ -230,7 +230,7 @@ CREATE TABLE `done` (
 -- 
 DROP TABLE IF EXISTS `progress`;
 CREATE TABLE `progress` (
-  `id` bigint(20) unsigned NOT NULL,
+  `id` bigint(20) unsigned NOT NULL auto_increment,
   `src` int(10) unsigned NULL, -- the node I'm copying from; NULL if unknown
   `dest` int(10) unsigned NOT NULL, -- my ID
   `inode` bigint(20) unsigned NOT NULL, -- the data I'm copying
