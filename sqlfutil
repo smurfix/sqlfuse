@@ -152,7 +152,11 @@ def progress_info(db,pnr):
 		yield(f,n)
 	yield('inode',d['inode'])
 	r = d["range"]
-	if r:
+	if r is None:
+		yield("range",'all')
+	elif r == "":
+		yield("range",'done')
+	else:
 		r = Range(r)
 		yield("range",str(r))
 

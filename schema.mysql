@@ -234,7 +234,7 @@ CREATE TABLE `progress` (
   `src` int(10) unsigned NOT NULL, -- the node I'm copying from
   `dest` int(10) unsigned NOT NULL, -- my ID
   `inode` bigint(20) unsigned NOT NULL, -- the data I'm copying
-  `range` varbinary(1023) NULL, -- what's still open?
+  `range` varbinary(1023) NULL, -- what's still open? NULL: whole file; empty: marker 'done'
   PRIMARY KEY (`id`),
   KEY `fk_progress_inode` (`inode`),
   KEY `fk_progress_dest` (`dest`),
