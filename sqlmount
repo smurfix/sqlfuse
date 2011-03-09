@@ -14,7 +14,7 @@ BLOCKSIZE = 4096
 
 from twisted.internet import reactor
 from sqlmix.twisted import DbPool
-from sqlfuse import SqlFuse
+from sqlfuse.main import SqlFuse
 from sqlfuse.options import options
 from twistfuse.handler import Handler
 import sys
@@ -39,7 +39,11 @@ sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 		d.addCallback(did_init)
 		def did_error(e):
 			print("Error:",e,file=sys.stderr)
+			global h
+			if h is not None:
+				h.umount()
 			reactor.stop()
+			fs.destroy()
 		d.addErrback(did_error)
 	reactor.callWhenRunning(startup)
 	reactor.run()

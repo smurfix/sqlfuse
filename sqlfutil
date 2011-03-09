@@ -17,8 +17,7 @@ from sqlfuse.options import options
 from sqlfuse.range import Range
 from datetime import datetime,timedelta
 import sys
-
-DBVERSION = "0.4.1"
+from sqlfuse import DBVERSION
 
 typ = {
 	"n":"new",
