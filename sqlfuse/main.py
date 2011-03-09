@@ -174,25 +174,27 @@ class SqlFuse(FileSystem):
 #		raise IOError(errno.EOPNOTSUPP)
 
 
+	@inlineCallbacks
 	def statfs(self):
 		"""\
 		File system status.
 		We recycle some values, esp. free space, from the underlying storage.
 		"""
-		s = llfuse.StatvfsData()
+		s = {}
 		osb = os.statvfs(self.store)
-		s.f_bsize = BLOCKSIZE
-		s.f_frsize = BLOCKSIZE
-		s.f_blocks,s.f_files = self.db.DoFn("select nblocks,nfiles from root where id=${root}", root=self.root_id)
-		s.f_bfree = (osb.f_bfree * osb.f_bsize) // BLOCKSIZE
-		s.f_bavail = (osb.f_bavail * osb.f_bsize) // BLOCKSIZE
-		s.f_ffree = osb.f_ffree
-		s.f_favail = osb.f_favail
-		s.f_namemax = 255 # see SQL schema
+		s['bsize'] = BLOCKSIZE
+		s['frsize'] = BLOCKSIZE
+		with self.db() as db:
+			s['blocks'],s['files'] = yield db.DoFn("select nblocks,nfiles from root where id=${root}", root=self.root_id)
+		s['bfree'] = (osb.f_bfree * osb.f_bsize) // BLOCKSIZE
+		s['bavail'] = (osb.f_bavail * osb.f_bsize) // BLOCKSIZE
+		s['ffree'] = osb.f_ffree
+		# s['favail'] = osb.f_favail
+		s['namelen'] = int(self.info.namelen) # see SQL schema
 
-		s.f_blocks += s.f_bfree
-		s.f_files += s.f_ffree
-		return s
+		s['blocks'] += s['bfree']
+		s['files'] += s['ffree']
+		returnValue( s )
 
 
 	## xattr back-end. The table uses IDs because they're much shorter than the names.
