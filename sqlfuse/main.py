@@ -29,6 +29,7 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 from sqlfuse import DBVERSION
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE
 from sqlfuse.background import RootUpdater,Recorder
+from sqlfuse.node import SqlNode
 from sqlmix.twisted import DbPool,NoData
 
 
@@ -51,6 +52,33 @@ class Info(object):
 			setattr(self,n,v)
 		return db.DoSelect("select name,value from `info`", _callback=cb)
 
+class RemoteDict(dict):
+	"""\
+		This dictionary stores references to all known remote nodes.
+
+		Nodes are instantiated simply by looking them up.
+		Note that actually connecting to them is a different problem.
+		"""
+	def __init__(self,filesystem):
+		self.filesystem = filesystem
+	def __getitem__(self, id):
+		try:
+			return dict.__getitem__(self,id)
+		except KeyError:
+			r = SqlNode(self.filesystem,id)
+			dict.__setitem__(self,id,r)
+			return r
+	def __setitem__(self, id, r):
+		raise KeyError("You cannot set any values this way")
+	def __delitem__(self, id):
+		try:
+			r = dict.__getitem__(self,id)
+		except KeyError:
+			pass
+		else:
+			dict.__delitem__(self,id)
+			r.disconnect()
+
 
 class SqlFuse(FileSystem):
 	MOUNT_OPTIONS={'allow_other':None, 'suid':None, 'dev':None, 'exec':None, 'fsname':'fuse.sql'}
@@ -67,6 +95,10 @@ class SqlFuse(FileSystem):
 
 	shutting_down = False
 
+	# The remote server, as set by sqlmount.
+	# TODO: probably refactor.
+	server = None
+
 	def __init__(self,*a,**k):
 		self._slot = {}
 		self._slot_next = 1
@@ -81,6 +113,7 @@ class SqlFuse(FileSystem):
 		self.ENTRY_VALID = (10,0)
 		self.ATTR_VALID = (10,0)
 
+		self.remote = RemoteDict(self)
 		# Note: Calling super().__init__ will happen later, in init_db()
 	
 
@@ -321,6 +354,10 @@ class SqlFuse(FileSystem):
 			return
 		self.shutting_down = True
 
+		if self.server is not None:
+			self.server.disconnect()
+		for k in self.remote.keys():
+			del self.remote[k]
 		# run all delayed jobs now
 		for c in reactor.getDelayedCalls():
 			c.reset(0)

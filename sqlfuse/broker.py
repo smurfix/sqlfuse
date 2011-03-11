@@ -9,7 +9,11 @@
 
 from __future__ import division, print_function, absolute_import
 
-__all__ = ('SQLserver','NodeChecker', 'build_response', 'InvalidResponse')
+"""\
+This module handles the server side of connecting SqlFuse nodes.
+"""
+
+__all__ = ('SqlServer','NodeChecker', 'build_response', 'InvalidResponse')
 
 from zope.interface import implements
 
@@ -46,41 +50,6 @@ def build_response(challenge, password):
     doubleHashedPassword = m.digest()
     return doubleHashedPassword
 
-class SQLrealm(object):
-	implements(portal.IRealm)
-	def __init__(self,filesystem):
-		self.filesystem = filesystem
-
-#	def requestAvatar(self, avatarID, mind, *interfaces):
-#		assert pb.IPerspective in interfaces
-#		avatar = SQLnode(avatarID, self.filesystem)
-#		avatar.attached(mind)
-#		return pb.IPerspective, avatar, lambda a=avatar:a.detached(mind)
-
-class SQLnode(pb.Avatar,pb.Referenceable):
-	"""\
-		This is the avatar, i.e. the server-side node which receives requests
-		on behalf of a client
-		"""
-	def __init__(self, realm, node_id):
-		self.node = node_id
-		self.filesystem = realm.filesystem
-	def setup(self):
-		"""\
-			Do any possibly-blocking setup stuff here.
-			"""
-		pass
-
-	def attached(self, mind):
-		self.remote = mind
-	def detached(self, mind):
-		self.remote = None
-
-	def perspective_joinGroup(self, groupname, allowMattress=True):
-		return self.server.joinGroup(groupname, self, allowMattress)
-	def send(self, message):
-		self.remote.callRemote("print", message)
-
 
 class IHashedSecretAuth(credentials.ICredentials):
 
@@ -115,28 +84,57 @@ class NodeChecker(object):
 		else:
 			return defer.fail(error.UnauthorizedLogin())
 
-class SQLportal(object):
+class SqlPortal(object):
+	"""\
+		The portal's main function is to return an initial root object,
+		i.e. the node which the client initially gets after connecting.
+
+		Obviously, the only thing the client should do at this point is to
+		log in ...
+		"""
 	implements(pb.IPBRoot)
-	def __init__(self, realm):
-		self.realm = realm
+	def __init__(self, filesystem):
+		self.filesystem = filesystem
 
 	def rootObject(self, broker):
-		return _Login1Wrapper(self.realm, broker)
+		"""\
+			... so we return an object which supports exactly that.
+			"""
+		return _Login1Wrapper(self.filesystem, broker)
 
 class _Login1Wrapper(object,pb.Referenceable):
-	def __init__(self, realm,broker):
-		self.realm = realm
+	"""\
+		First step when logging in a client.
+		"""
+	def __init__(self, filesystem,broker):
+		self.filesystem = filesystem
 		self.broker = broker
+		self.dead = False
 
 	def remote_login1(self, src,dest,c):
+		"""\
+			The client supplies source and destination node IDs, and a
+			challenge string for authorizing the server to the client.
+
+			The server replies with a hash of its own secret,
+			challenge for authorizing the client, and a node for the second
+			step of the process.
+			"""
+		if self.dead:
+			return failure.Failure(RuntimeError("you already tried this. Shame on you."))
+		self.dead = True
+
 		if not isinstance(src,int) or not isinstance(dest,int) or not isinstance(c,str):
 			return failure.Failure(ValueError("login params"))
+		if len(c) < 16:
+			return failure.Failure(ValueError("your challenge string is pathetic"))
+
 		self.src = src
 		self.dest = dest
-		fs = self.realm.filesystem
+		fs = self.filesystem
 		if dest != fs.node_id or src == fs.node_id:
 			return failure.Failure(WrongNode())
-		db = self.realm.filesystem.db()
+		db = fs.db()
 		d = db.DoFn("select secret from node where id=${node}", node=self.src)
 		d.addBoth(db.rollback)
 		def cbsi1(r):
@@ -148,36 +146,57 @@ class _Login1Wrapper(object,pb.Referenceable):
 		return d
 
 class _Login2Wrapper(object,pb.Referenceable):
+	"""\
+		This node controls the second step of the login process.
+		"""
 	def __init__(self, old,c):
-		self.realm = old.realm
+		self.filesystem = old.filesystem
 		self.broker = old.broker
 		self.src = old.src
 		self.dest = old.dest
 		self.challenge = c
+		self.dead = False
 	def remote_login2(self,res,avatar):
-		db = self.realm.filesystem.db()
+		"""\
+			The client sends its answer to the server's challenge, and a way to
+			talk to it (if necessary). The server replies with (a reference
+			to) its avatar.
+			"""
+		if self.dead:
+			return failure.Failure(RuntimeError("you already tried this. Shame on you."))
+		self.dead = True
+
+		db = self.filesystem.db()
 		d = db.DoFn("select secret from node where id=${node}", node=self.dest)
 		def cbsj2(r):
 			r, = r
 			if res != build_response(self.challenge,r):
 				return failure.Failure(error.UnauthorizedLogin())
-			self.node = SQLnode(self.realm, self.src)
-			return self.node.setup()
-		def cbsj3(r):
-			return self.node
+			self.node = self.filesystem.remote[self.src]
+			return self.node.connected(avatar)
+		#def cbsj3(r):
+			#dd = avatar.callRemote("echo","baz xyzzy")
+			#def cbl(r):
+			#	print("ECHOS",r)
+			#dd.addBoth(cbl)
+			#return dd
 		d.addCallback(cbsj2)
 		d.addBoth(db.rollback)
-		d.addCallback(cbsj3)
+		#d.addCallback(cbsj3)
+		d.addCallback(lambda _: self.node)
 		d.addErrback(log.err)
 		return d
 
 
-class SQLserver(object):
+class SqlServer(object):
 	def __init__(self, filesystem):
 		self.filesystem = filesystem
-		realm = SQLrealm(self.filesystem)
 		checker = NodeChecker(self.filesystem.node_id)
-		p = SQLportal(realm)
+		p = SqlPortal(self.filesystem)
 		self.listener = reactor.listenTCP(self.filesystem.port, pb.PBServerFactory(p))
-
+	
+	def disconnect(self):
+		if self.listener is not None:
+			self.listener.stopListening()
+			self.listener = None
 

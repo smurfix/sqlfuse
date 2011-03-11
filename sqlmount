@@ -18,7 +18,7 @@ from twisted.spread import pb
 from sqlmix.twisted import DbPool
 from sqlfuse.main import SqlFuse
 from sqlfuse.options import options
-from sqlfuse.broker import SQLserver
+from sqlfuse.broker import SqlServer
 from twistfuse.handler import Handler
 import sys
 import twist
@@ -42,7 +42,7 @@ sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 		def did_init2(r):
 			return fs.init(opt)
 		def did_init3(r):
-			fs.server = SQLserver(fs)
+			fs.server = SqlServer(fs)
 		d.addCallback(did_init)
 		d.addCallback(did_init2)
 		d.addCallback(did_init3)

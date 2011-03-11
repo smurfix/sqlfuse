@@ -9,7 +9,11 @@
 
 from __future__ import division, print_function, absolute_import
 
-__all__ = ('SQLconnector',)
+__all__ = ('SqlClientFactory','NodeCredentials',)
+
+"""\
+This module handles the client side of connecting SqlFuse nodes.
+"""
 
 from zope.interface import implements
 
@@ -21,8 +25,15 @@ from twisted.python import log
 
 from sqlfuse.broker import build_response,InvalidResponse
 
+#		Twisted normally does its authorization dance with a couple of
+#		classes, adapters, and whatnot. This way, however, is at least
+#		understandable for peole who don't live and breathe the stuff.
 
 class NodeCredentials(object):
+	"""\
+		This object represents the client-side credentials storage.
+		"""
+
 	implements(credentials.ICredentials)
 	def __init__(self, db, src, dest):
 		self.db = db
@@ -32,7 +43,7 @@ class NodeCredentials(object):
 	def new_challenge(self):
 		self.challenge = open("/dev/urandom","r").read(64)
 
-class SQLclient(object,pb.Referenceable):
+class TestClient(object,pb.Referenceable):
 	"""\
 		This is the "mind" object, i.e. which initially receives remote
 		requests from the server.
@@ -40,18 +51,22 @@ class SQLclient(object,pb.Referenceable):
 	def __init__(self,filesystem):
 		self.filesystem = filesystem
 
-class SQLclientFactory(pb.PBClientFactory,object):
+	def remote_echo(self, message):
+		print("ECHOS",message)
+		return message
+
+class SqlClientFactory(pb.PBClientFactory,object):
 	def __init__(self, filesystem):
-		super(SQLclientFactory,self).__init__(True)
+		super(SqlClientFactory,self).__init__(True)
 		self.filesystem = filesystem
 
-	def _cbSendInfo1(self, root, creds, client):
+	def _cbSendInfo1(self, root, creds, node):
 		creds.new_challenge()
 		d = root.callRemote("login1", creds.src,creds.dest, creds.challenge)
-		d.addCallback(self._cbSendInfo2, creds, client)
+		d.addCallback(self._cbSendInfo2, creds, node)
 		return d
 
-	def _cbSendInfo2(self, res, creds, client):
+	def _cbSendInfo2(self, res, creds, node):
 		(root2,challenge,res) = res
 		db = self.filesystem.db()
 		d = db.DoFn("select secret from node where id=${node}", node=creds.src)
@@ -59,11 +74,12 @@ class SQLclientFactory(pb.PBClientFactory,object):
 		def cbsi1(r):
 			r, = r
 			if build_response(creds.challenge,r) != res:
+				# Yes, we also authorize the server to the client.
 				return failure.Failure(error.UnauthorizedLogin())
 			return db.DoFn("select secret from node where id=${node}", node=creds.dest)
 		def cbsi2(r):
 			r, = r
-			return root2.callRemote("login2", build_response(challenge,r), SQLclient(self.filesystem))
+			return root2.callRemote("login2", build_response(challenge,r), node)
 		d.addCallback(cbsi1)
 		d.addBoth(db.rollback)
 		d.addCallback(cbsi2)
@@ -71,7 +87,7 @@ class SQLclientFactory(pb.PBClientFactory,object):
 		return d
 		
 
-	def login(self, credentials, client):
+	def login(self, credentials, node):
 		"""
 		Login and get perspective from remote PB server.
 
@@ -82,18 +98,15 @@ class SQLclientFactory(pb.PBClientFactory,object):
 		"""
 		d = self.getRootObject()
 
-		d.addCallback(self._cbSendInfo1, credentials, client)
+		d.addCallback(self._cbSendInfo1, credentials, node)
 		return d
 
 
-class Client(object):
+class TestConnector(object):
 	def __init__(self,filesystem,node_id):
-		super(Client,self).__init__()
+		super(TestConnector,self).__init__()
 		self.filesystem = filesystem
 		self.node_id = node_id
-
-	def remote_print(self, message):
-		print(message)
 
 	@inlineCallbacks
 	def connect(self):
@@ -107,22 +120,25 @@ class Client(object):
 					port, = yield db.DoFn("select port from node where id=${node}", node=self.node_id)
 					assert port > 0
 			adr = conn[0]
-			factory = SQLclientFactory(self.filesystem)
+			factory = SqlClientFactory(self.filesystem)
 			reactor.connectTCP(adr,port, factory)
-			res = yield factory.login(NodeCredentials(self.filesystem.db, self.filesystem.node_id,self.node_id), client=SQLclient)
-			yield self.connected(res)
+			res = yield factory.login(NodeCredentials(self.filesystem.db, self.filesystem.node_id,self.node_id), node=TestClient(self.filesystem))
+			res = yield self.connected(res)
+			returnValue (res )
 		except Exception:
 			log.err()
 
-
-
+	def disconnected(self,p):
+		print("disconnected",p,p.__dict__)
+		
 	def connected(self, perspective):
-		print("connected",perspective)
 		# this perspective is a reference to our User object.  Save a reference
 		# to it here, otherwise it will get garbage collected after this call,
 		# and the server will think we logged out.
-		reactor.stop()
+		perspective.notifyOnDisconnect(self.disconnected)
+		return perspective
 
+## simple test code
 if __name__ == '__main__':
 	class Dummy(object): pass
 
@@ -133,6 +149,16 @@ if __name__ == '__main__':
 	fs.db = DbPool(username='test',password='test',database='test_sqlfuse',host='sql.intern.smurf.noris.de')
 	fs.node_id = 3
 
-	Client(fs,1).connect()
+	r = TestConnector(fs,1).connect()
+	def logme(r,i):
+		print(i,r)
+		return r
+
+	# r.addBoth(logme,"DID")
+	def rem(r):
+		r.notifyOnDisconnect(lambda _: reactor.stop())
+		d = r.callRemote("echo","Bla Fasel")
+		d.addBoth(logme,"ECHO")
+	r.addCallback(rem)
 	reactor.run()
 
