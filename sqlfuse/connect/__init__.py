@@ -22,6 +22,7 @@ class INodeClient(Interface):
 		I represent what a node can do to its remote side.
 
 		(Almost) all my method names start with "do_".
+		I forward these calls to the remote side.
 		"""
 	def init(node):
 		"""Which node to control."""
@@ -30,19 +31,12 @@ class INodeClient(Interface):
 	def disconnect():
 		"""Shutdown, or abort trying to connect."""
 
-	def do_echo(data):
-		"""Instruct the remote side to send the given data back."""
-	
-
 
 class INode(Interface):
 	"""\
 		I represent a node -- specifically, what a remote side can ask a
 		node to do.
 		"""
-	
-	def echo(data):
-		"""Instruct the node side to send the given data back."""
 	
 	def server_connected(node_server):
 		"""This server is new.
@@ -70,6 +64,7 @@ class INodeServer(Interface):
 
 		My methods are protocol specific, but their name never starts with "do_".
 		They are invoked from the remote side and call my node.
+		I forward these calls to the local SqlNode object.
 		"""
 	#node = None
 

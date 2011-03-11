@@ -13,7 +13,7 @@ from __future__ import division, print_function, absolute_import
 This module handles the native connection method.
 """
 
-__all__ = ('Server','Client')
+__all__ = ('NodeClient','NodeServer','NodeServerFactory')
 
 from zope.interface import implements
 
@@ -25,7 +25,7 @@ from twisted.python import log
 from twisted.python.hashlib import md5
 from twisted.spread import pb
 
-from sqlfuse.connect import INodeClient,INodeServer
+from sqlfuse.connect import INodeClient,INodeServer,INodeServerFactory, build_callouts
 from sqlfuse.node import SqlNode
 
 class InvalidResponse(error.UnauthorizedLogin):
@@ -147,16 +147,16 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 ## INodeClient
 ##############
 
-	def do_echo(self,data):
-		return self.proxy.callRemote("echo",data)
+#	def do_echo(self,data):
+#		return self.proxy.callRemote("echo",data)
 
 
 ##############
 ## INodeServer
 ##############
 
-	def remote_echo(self,data):
-		return self.node.remote_echo(data)
+#	def remote_echo(self,data):
+#		return self.node.remote_echo(data)
 
 
 #################
@@ -348,6 +348,8 @@ for name in SqlNode.remote_names():
 
 
 class NodeServerFactory(object):
+	implements(INodeServerFactory)
+
 	def __init__(self, filesystem):
 		self.filesystem = filesystem
 	
