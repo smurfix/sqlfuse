@@ -9,6 +9,8 @@
 
 from __future__ import division, print_function, absolute_import
 
+import twist
+
 __all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION')
 
 import datetime,errno,inspect,os

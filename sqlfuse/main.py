@@ -275,7 +275,7 @@ class SqlFuse(FileSystem):
 		self.node = node
 		with self.db() as db:
 			try:
-				self.node_id,self.root_id,self.inum,self.store = yield db.DoFn("select node.id,root.id,root.inode,node.files from node,root where root.id=node.root and node.name=${name}", name=node)
+				self.node_id,self.root_id,self.inum,self.store,self.port = yield db.DoFn("select node.id,root.id,root.inode,node.files,node.port from node,root where root.id=node.root and node.name=${name}", name=node)
 			except NoData:
 				raise RuntimeError("data for '%s' is missing"%(self.node,))
 			try:

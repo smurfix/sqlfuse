@@ -13,11 +13,15 @@ from __future__ import division, print_function, absolute_import
 BLOCKSIZE = 4096
 
 from twisted.internet import reactor
+from twisted.spread import pb
+
 from sqlmix.twisted import DbPool
 from sqlfuse.main import SqlFuse
 from sqlfuse.options import options
+from sqlfuse.broker import SQLserver
 from twistfuse.handler import Handler
 import sys
+import twist
 
 h = None
 def main():
@@ -34,9 +38,14 @@ sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 		def did_init(r):
 			global h
 			h = Handler(logfile=None)
-			h.mount(fs,opt.mountpoint)
-			fs.init(opt)
+			return h.mount(fs,opt.mountpoint)
+		def did_init2(r):
+			return fs.init(opt)
+		def did_init3(r):
+			fs.server = SQLserver(fs)
 		d.addCallback(did_init)
+		d.addCallback(did_init2)
+		d.addCallback(did_init3)
 		def did_error(e):
 			print("Error:",e,file=sys.stderr)
 			global h
@@ -53,3 +62,4 @@ sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 
 if __name__ == '__main__':
 	main()
+

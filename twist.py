@@ -195,3 +195,11 @@ def cleanFailure(self):
 
 failure.Failure.cleanFailure = cleanFailure
 
+_tig = failure.Failure.throwExceptionIntoGenerator
+def tig(self,g):
+	if isinstance(self.value,str):
+		self.type = RuntimeError
+		self.value = RuntimeError(self.value)
+	_tig(self,g)
+failure.Failure.throwExceptionIntoGenerator = tig
+	
