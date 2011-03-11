@@ -1,0 +1,63 @@
+# -*- coding: utf-8 -*-
+
+#    Copyright (C) 2010,2011  Matthias Urlichs <matthias@urlichs.de>
+#
+#    This program may be distributed under the terms of the GNU GPLv3.
+#
+## This file is formatted with tabs.
+## Do NOT introduce leading spaces.
+
+from __future__ import division, print_function, absolute_import
+
+"""\
+This code tests connecting to a remote client
+"""
+
+from zope.interface import implements
+
+from twisted.cred import credentials,error
+from twisted.internet import reactor
+from twisted.internet.defer import inlineCallbacks,returnValue
+from twisted.spread import pb
+from twisted.python import log
+
+from sqlfuse.connect import INode
+
+#		Twisted normally does its authorization dance with a couple of
+#		classes, adapters, and whatnot. This way, however, is at least
+#		understandable for peole who don't live and breathe the stuff.
+
+class TestClient(object):
+	implements(INode)
+	def __init__(self,filesystem):
+		self.filesystem = filesystem
+
+	def remote_echo(self, message):
+		print("ECHOS",message)
+		return message
+
+
+## simple test code
+if __name__ == '__main__':
+	class Dummy(object): pass
+
+	from sqlmix.twisted import DbPool
+	import twist
+
+	fs = Dummy()
+	fs.db = DbPool(username='test',password='test',database='test_sqlfuse',host='sql.intern.smurf.noris.de')
+	fs.node_id = 3
+
+	r = TestConnector(fs,1).connect()
+	def logme(r,i):
+		print(i,r)
+		return r
+
+	# r.addBoth(logme,"DID")
+	def rem(r):
+		r.notifyOnDisconnect(lambda _: reactor.stop())
+		d = r.callRemote("echo","Bla Fasel")
+		d.addBoth(logme,"ECHO")
+	r.addCallback(rem)
+	reactor.run()
+

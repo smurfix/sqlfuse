@@ -28,7 +28,7 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
 from sqlfuse import DBVERSION
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE
-from sqlfuse.background import RootUpdater,Recorder
+from sqlfuse.background import RootUpdater,Recorder,NodeCollector
 from sqlfuse.node import SqlNode
 from sqlmix.twisted import DbPool,NoData
 
@@ -85,7 +85,9 @@ class SqlFuse(FileSystem):
 
 	rooter = DummyRooter()
 	record = DummyRecorder()
+	collector = DummyQuit()
 	db = DummyQuit()
+	servers = []
 
 	# 0: no atime; 1: only if <mtime; 2: always
 	atime = 1
@@ -94,10 +96,6 @@ class SqlFuse(FileSystem):
 	diratime = 0
 
 	shutting_down = False
-
-	# The remote server, as set by sqlmount.
-	# TODO: probably refactor.
-	server = None
 
 	def __init__(self,*a,**k):
 		self._slot = {}
@@ -338,7 +336,33 @@ class SqlFuse(FileSystem):
 		self.rooter.start()
 		self.record = Recorder(self)
 		self.record.start()
+		self.collector = NodeCollector(self)
+		self.collector.start()
+		self.connect_all()
+	
+	@inlineCallbacks
+	def connect_all(self):
+		from sqlfuse.connect import METHODS
+		for m in METHODS:
+			try:
+				m = __import__("sqlfuse.connect."+m, fromlist=('NodeServerFactory',))
+				m = m.NodeServerFactory(self)
+				yield m.connect()
+			except Exception:
+				traceback.print_exc()
+			else:
+				self.servers.append(m)
+		pass
 
+	def disconnect_all(self):
+		srv = self.servers
+		self.servers = []
+		for s in srv:
+			try:
+				yield s.disconnect()
+			except Exception:
+				traceback.print_exc()
+		
 	def mount(self,handler,flags):
 		"""\
 			FUSE callback.
@@ -354,8 +378,7 @@ class SqlFuse(FileSystem):
 			return
 		self.shutting_down = True
 
-		if self.server is not None:
-			self.server.disconnect()
+		self.disconnect_all()
 		for k in self.remote.keys():
 			del self.remote[k]
 		# run all delayed jobs now
@@ -365,10 +388,13 @@ class SqlFuse(FileSystem):
 		self.rooter = None
 		self.record.quit()
 		self.record = None
-		self.db.close()
-		self.db = None
+		self.collector.quit()
+		self.collector = None
 		reactor.iterate(delay=0.01)
 		#self.db.stop() # TODO: shutdown databases
 		#reactor.iterate(delay=0.05)
+		self.db.close()
+		self.db = None
+		reactor.iterate(delay=0.01)
 
 

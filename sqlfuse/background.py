@@ -168,3 +168,35 @@ class Recorder(BackgroundJob):
 		self.trigger()
 
 
+class NodeCollector(BackgroundJob):
+	"""\
+		Periodically try to make the internal list of remote nodes mirror
+		the facts in the database.
+		"""
+	def __init__(self,tree):
+		super(NodeCollector,self).__init__()
+		self.tree = tree
+		self.trigger()
+		self.interval = 60
+	
+	@inlineCallbacks
+	def work(self):
+		nodes = set()
+		with self.tree.db() as db:
+			yield db.DoSelect("select id from node where id != ${node} and root = ${root}",root=self.tree.root_id, node=self.tree.node_id, _empty=1, _callback=nodes.add)
+
+			# TODO: create a topology map
+
+		# drop obsolete nodes
+		for k in self.tree.remote.keys():
+			if k not in nodes:
+				del self.tree.remote[k]
+
+		# add new nodes
+		for k in nodes:
+			if k not in self.tree.remote:
+				self.tree.remote[k].connect() # yes, this works, .remote auto-extends
+
+
+
+

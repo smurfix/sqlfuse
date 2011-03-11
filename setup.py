@@ -24,6 +24,6 @@ setup (name = "sqlfuse",
        url = "http://netz.smurf.noris.de/cgi/gitweb?p=sqlfuse.git",
        license = 'Python',
        platforms = ['POSIX'],
-       packages = ['sqlfuse'],
+       packages = ['sqlfuse','sqlfuse.connect'],
 	   scripts = ['sqlmount', 'sqlfutil'],
       )
