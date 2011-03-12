@@ -40,3 +40,17 @@ class NodeClient(object):
 	def disconnected(self, client):
 		pass
 
+class NodeServer(object):
+	def __init__(self):
+		pass
+	def disconnect(self):
+		pass
+
+class NodeServerFactory(object):
+	def __init__(self,fs):
+		pass
+	def connect(self):
+		raise NotImplementedError()
+	def disconnect(self):
+		pass
+		
