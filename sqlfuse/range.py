@@ -34,6 +34,59 @@ class Range(list):
 		return "%s(%s)" % (self.__class__.__name__,list.__repr__(self))
 	def __str__(self):
 		return ",".join(((("%d-%d"%(a,b-1)) if a<b else str(a)) for a,b in self))
+	def sum(self):
+		l = 0
+		for s,e in self:
+			l += e-s
+		return l
+
+	def __add__(self,other):
+		"""Union"""
+		res = Range(self)
+		return res.__iadd__(other)
+	def __iadd__(self,other):
+		for a,b in other:
+			self.add(a,b)
+		return self
+
+	def __sub__(self,other):
+		"""Difference: Remove all parts which are in @other."""
+		res = Range(self)
+		return res.__isub__(other)
+	def __isub__(self,other):
+		for a,b in other:
+			self.delete(a,b)
+		return self
+
+	def __and__(self,other):
+		"""Intersection: Remove all parts which are not in @other."""
+		res = Range(self)
+		return res.__iand__(other)
+	def __iand__(self,other):
+		e = 0
+		for a,b in other:
+			if a > e: # test fails if the first range starts at zero
+				self.delete(e,a)
+			e = b
+		if e is not None:
+			while len(self):
+				self[-1]
+				if self[-1][0] >= e:
+					self.pop()
+				else:
+					if self[-1][1] > e:
+						self[-1] = (self[-1][0],e)
+					break
+
+		return self
+
+
+
+		if other[0][0]:
+			self.delete((0,[0][0]))
+		e = other[0][1]
+		for a,b in other:
+			self.delete((a,b))
 
 	def encode(self,T=T,NT=NT):
 		"""\
@@ -193,7 +246,27 @@ if __name__ == "__main__":
 	rem(110,115,'(+{{_"?{{_')
 	rem(19,32,'(}}=_"?{{_')
 	rem(29,31,'(}}=_"?{{_')
-	print(repr(a))
+	#print(repr(a))
+
+	def t(a,b,op,c):
+		a=Range(a)
+		b=Range(b)
+		c=Range(c)
+		if getattr(a,'__'+op+'__')(b) != c:
+			print(a,op,b,"!=",c)
+			raise RuntimeError
+
+	t(((10,20),),((30,40),),'add',((10,20),(30,40)))
+	t(((10,20),),((30,40),),'sub',((10,20),))
+	t(((10,80),),((30,40),),'sub',((10,30),(40,80)))
+	t(((10,80),),((30,40),),'and',((30,40),))
+	t(((10,40),),((30,40),),'and',((30,40),))
+	t(((10,40),),((30,41),),'and',((30,40),))
+	t(((10,41),),((30,40),),'and',((30,40),))
+	t(((10,30),),((30,40),),'and',())
+	t(((10,31),),((30,40),),'and',((30,31),))
+	t(((10,31),(98,99)),((30,40),),'and',((30,31),))
+	print("All tests OK.")
 
 #	for i in range(10000):
 #		x=r.randint(2**15,2**20)
