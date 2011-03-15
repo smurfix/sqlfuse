@@ -80,13 +80,15 @@ class Range(list):
 
 		return self
 
+	def equals(self,a,b):
+		if a == b:
+			return len(self) == 0
 
-
-		if other[0][0]:
-			self.delete((0,[0][0]))
-		e = other[0][1]
-		for a,b in other:
-			self.delete((a,b))
+		if len(self) != 1:
+			return False
+		if self[0][0] != a or self[0][1] != b:
+			return False
+		return True
 
 	def encode(self,T=T,NT=NT):
 		"""\
@@ -149,6 +151,7 @@ class Range(list):
 		a=0
 		b=len(self)
 		i=0
+		chg = True
 		while a<b:
 			i=(a+b)//2
 			if self[i][1] < start:
@@ -160,9 +163,12 @@ class Range(list):
 				break
 		while i < len(self) and self[i][0] <= end:
 			s,e = self.pop(i)
+			if start >= s and end <= e:
+				chg = False
 			if start > s: start = s
 			if end < e: end = e
 		self.insert(i,(start,end))
+		return chg
 
 	def delete(self, start,end):
 		"""Remove a start/end range to the list"""
@@ -199,15 +205,15 @@ if __name__ == "__main__":
 	"""Test the module."""
 	from random import SystemRandom
 	import sys
-	def add(start,end,res=None):
-		a.add(start,end)
+	def add(chg,start,end,res=None):
+		c = a.add(start,end)
 		r = a.encode()
 		print("\tadd(%d,%d,%r)" % (start,end,r))
-		if res is not None and res != r:
+		if (res is not None and res != r) or chg != c:
 			b = Range()
 			b.decode(res)
-			print("Want",repr(b))
-			print("Has ",repr(a),repr(a.encode()))
+			print("Want",chg,repr(b))
+			print("Has ",c,repr(a),repr(a.encode()))
 			print("after add",start,end)
 			sys.exit(1)
 	def rem(start,end,res=None):
@@ -224,19 +230,24 @@ if __name__ == "__main__":
 			sys.exit(1)
 	r=SystemRandom()
 	a = Range()
-	add(70,80,'s${')
-	add(30,40,'@{@{')
-	add(50,60,'@{{{{{')
-	add(10,20,'{{{{{{{{')
-	add(90,100,'{{{{{{{{{{')
-	add(9,10,'?[{{{{{{{{')
-	add(49,51,'?[{{?[{{{{')
-	add(87,89,'?[{{?[{{)$"{')
-	add(41,43,'?[{{"$([{{)$"{')
-	add(20,22,'?}={"$([{{)$"{')
-	add(59,61,'?}={"$(]?{)$"{')
-	add(5,33,'/3"$(]?{)$"{')
-	add(75,111,'/3"$(]?9')
+	add(1,70,80,'s${')
+	add(1,30,40,'@{@{')
+	add(1,50,60,'@{{{{{')
+	add(1,11,19,'[=[{{{{{')
+	add(0,11,19,'[=[{{{{{')
+	add(1,10,19,'{?[{{{{{')
+	add(1,10,20,'{{{{{{{{')
+	add(0,10,19,'{{{{{{{{')
+	add(0,11,20,'{{{{{{{{')
+	add(1,90,100,'{{{{{{{{{{')
+	add(1,9,10,'?[{{{{{{{{')
+	add(1,49,51,'?[{{?[{{{{')
+	add(1,87,89,'?[{{?[{{)$"{')
+	add(1,41,43,'?[{{"$([{{)$"{')
+	add(1,20,22,'?}={"$([{{)$"{')
+	add(1,59,61,'?}={"$(]?{)$"{')
+	add(1,5,33,'/3"$(]?{)$"{')
+	add(1,75,111,'/3"$(]?9')
 	rem(20,30,'/*{{"$(]?9')
 	rem(80,90,'/*{{"$(]?{{.')
 	rem(40,60,'/*{{_"?{{.')
