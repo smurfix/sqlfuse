@@ -1,3 +1,10 @@
+python-sqlfuse (0.4.5-1) unstable; urgency=low
+
+  * Add a cache table, to remember which files have not been fetched
+    completely.
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Mon, 14 Mar 2011 13:09:55 +0100
+
 python-sqlfuse (0.4.1-1) unstable; urgency=low
 
   * Initial packaging.

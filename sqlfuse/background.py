@@ -9,14 +9,17 @@
 
 from __future__ import division, print_function, absolute_import
 
-__all__ = ("RootUpdater,Recorder")
+__all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder")
 
+from collections import defaultdict
 import sys
+
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred
 
 from sqlmix import NoData
 from sqlfuse.fs import BLOCKSIZE
+from sqlfuse.topo import next_hops
 
 class BackgroundJob(object):
 	"""\
@@ -96,6 +99,7 @@ class RootUpdater(BackgroundJob):
 				yield db.Do("update root set nfiles=nfiles+${inodes}, nblocks=nblocks+${blocks}, ndirs=ndirs+${dirs}", root=self.tree.root_id, inodes=d_inode, blocks=d_block, dirs=d_dir)
 		returnValue( None )
 
+
 class Recorder(BackgroundJob):
 	"""\
 		I record inode changes so that another node can see what I did, and
@@ -168,6 +172,36 @@ class Recorder(BackgroundJob):
 		self.trigger()
 
 
+class CacheRecorder(BackgroundJob):
+	"""\
+		I record an inode's caching state.
+		"""
+	def __init__(self,tree):
+		super(CacheRecorder,self).__init__()
+		self.tree = tree
+		self.nodes = set()
+
+	@inlineCallbacks
+	def work(self):
+		n = self.nodes
+		self.nodes = set()
+		with self.tree.db() as db:
+			for n in self.nodes:
+				if n.cache:
+					if n.cache.is_new:
+						yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.inum, node=self.tree.node_id, data=n.cache.available.encode())
+						n.cache.is_new = False
+					else:
+						yield db.Do("update cache set cached=${data} where inode=${inode} and node=${node}", inode=n.inum, node=self.tree.node_id, data=n.cache.available.encode(), _empty=True)
+				else:
+					yield db.Do("delete from cache where inode=${inode} and node=${node}", inode=n.inum, node=self.tree.node_id, _empty=True)
+
+
+	def note(self,node):
+		self.nodes.add(node)
+		self.trigger()
+	
+
 class NodeCollector(BackgroundJob):
 	"""\
 		Periodically try to make the internal list of remote nodes mirror
@@ -186,17 +220,33 @@ class NodeCollector(BackgroundJob):
 			yield db.DoSelect("select id from node where id != ${node} and root = ${root}",root=self.tree.root_id, node=self.tree.node_id, _empty=1, _callback=nodes.add)
 
 			# TODO: create a topology map
+			## now create a topology map: how do I reach X from here?
+			topo = yield self.get_paths(db)
+			topo = next_hops(topo, self.tree.node_id)
 
 		# drop obsolete nodes
 		for k in self.tree.remote.keys():
 			if k not in nodes:
 				del self.tree.remote[k]
 
+		self.tree.topology = topo
+
 		# add new nodes
 		for k in nodes:
 			if k not in self.tree.remote:
 				self.tree.remote[k].connect() # yes, this works, .remote auto-extends
 
-
-
+	
+	@inlineCallbacks
+	def get_paths(self, db):
+		"""\
+			Read path tuples from the database
+			"""
+		ways = defaultdict(dict)
+		def add_way(src,dest,distance,method):
+			ways[src][dest] = distance
+			if method == 'native' and src not in ways[dest]:
+				ways[dest][src] = distance+1 # asymmetric default path
+		yield db.DoSelect("select src,dest,distance,method from updater", _empty=1, _callback=add_way)
+		returnValue( ways )
 

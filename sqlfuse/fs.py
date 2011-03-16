@@ -16,11 +16,14 @@ BLOCKSIZE = 4096
 import errno, fcntl, os, stat, sys
 from threading import Lock
 from sqlfuse.range import Range
+from weakref import WeakValueDictionary
+
 from twistfuse.filesystem import Inode,File,Dir
 from twistfuse.kernel import XATTR_CREATE,XATTR_REPLACE
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.internet.threads import deferToThread
+from twisted.spread import pb
 
 from sqlfuse import nowtuple,log_call,flag2mode
 from sqlmix.twisted import NoData
@@ -28,12 +31,86 @@ from sqlmix.twisted import NoData
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
 inode_xattrs = inode_attrs.union(frozenset("copies target".split()))
 
+class Cache(object,pb.Referenceable):
+	is_new = False
+
+	def __init__(self,node):
+		self.node = node
+		self.q = []
+		self.available = None
+		self.in_progress = Range()
+
+	def _load(self,db):
+		try:
+			cache, = yield db.DoFn("select cache from cache where node=${node} and inode=${inum}", node=self.filesystem.node_id, inum=self.node.nodeid, _dict=True)
+		except NoData:
+			self.cache = Range()
+			self.is_new = True
+		else:
+			self.cache = Range(cache)
+
+	@inlineCallbacks
+	def remote_data(self, offset, data):
+		"""\
+			Data arrives.
+			"""
+		yield self.node._write(offset,data)
+		self.has(offset,offset+len(data))
+
+	def has(self,offset,end):
+		"""\
+			Note that a data block has arrived.
+			"""
+		self.in_progress.delete(offset,end)
+		chg = self.available.add(offset,end)
+
+		if self.available.equals(0,self.node.size):
+			del _Cache[self.node.nodeid]
+			self.node.cache = None # kill myself. more or less
+		if chg:
+			self.tree.changer.note(self.node) # save in the database
+			self._trigger_waiters()
+
+	def trigger_waiters(self):
+		q = self.q
+		self.q = []
+		for d in q:
+			d.callback(None)
+
+	@inlineCallbacks
+	def get_data(self, offset,length):
+		"""\
+			Check if the given data record is available.
+			"""
+		r = Range([(offset,offset+length)])
+		while True:
+			missing = r - self.available
+			if not missing:
+				returnValue( True )
+			todo = missing - self.in_progress
+			if todo:
+				self.in_progress += missing
+				try:
+					yield self.node.filesystem.each_node("readfile",self.node.nodeid,self,missing)
+				finally:
+					self.in_progress -= missing
+					self._trigger_waiters()
+					returnValue( not(r - self.available) ) # flag whether data is here
+			else:
+				q = Deferred()
+				self.q.append(q)
+				yield q
+	
+
+# Normally the system caches inode records. However, we may have external
+# references (other nodes fetching data), so we guarantee uniqueness here
+_Inode = WeakValueDictionary()
 class SqlInode(Inode):
 	"""\
 	This represents an in-memory inode object.
 	"""
 #	__slots__ = [ \
-#		'inum',          # inode number
+#		'nodeid',        # inode number
 #		'seq',           # database update tracking
 #		'attrs',         # dictionary of current attributes (size etc.)
 #		'old_size',      # inode size, as stored in the database
@@ -41,8 +118,6 @@ class SqlInode(Inode):
 #		'seq',           # change sequence# on-disk
 #		'timestamp',     # time the attributes have been read from disk
 #		'tree',          # Operations object
-#		#'lock',          # Lock for save vs. update
-#		#'writelock',     # Lock for concurrent save
 #		'changes',       # Range of bytes written (but not saved in a change record)
 #		'inuse',         # open files on this inode? <0:delete after close
 #		'write_timer',   # attribute write timer
@@ -457,11 +532,20 @@ class SqlInode(Inode):
 #			inode.nodeid = None
 #			return inode
 #
+	is_new = False
+	def __new__(cls,filesystem,nodeid):
+		self = _Inode.get(nodeid,None)
+		if self is None:
+			self = object.__new__(cls)
+			self.inuse = None
+			_Inode[nodeid] = self
+		return self
 	def __init__(self,filesystem,nodeid):
 #		if isinstance(inum,SqlInode): return
 #		if self.nodeid is not None:
 #			assert self.nodeid == inum
 #			return
+		if getattr(self,"inuse",None) is not None: return
 		super(SqlInode,self).__init__(filesystem,nodeid)
 		self.seq = None
 		self.attrs = None
@@ -500,6 +584,14 @@ class SqlInode(Inode):
 		self.seq = d["seq"]
 		self.old_size = d["size"]
 		self.timestamp = nowtuple()
+
+		ipath=self._file_path()
+		if os.path.exists(ipath):
+			self.cache = None
+		else:
+			self.cache = Cache(self)
+			yield self.cache._load(db)
+
 		returnValue( None )
 	
 	def __getitem__(self,key):
@@ -650,6 +742,8 @@ class SqlFile(File):
 		"""Read file, updating atime"""
 		self.node.do_atime()
 		#self.node.atime = nowtuple()
+		if self.node.cache:
+			yield self.node.cache.get_data(offset,length)
 		def _read():
 			with self.lock:
 				self.file.seek(offset)
@@ -657,17 +751,21 @@ class SqlFile(File):
 		data = yield deferToThread(_read)
 		returnValue( data )
 
+	def _write(self,offset,buf):
+		"""Actually write the file data. Don't change any metadata here!"""
+		with self.lock:
+			self.file.seek(offset)
+			self.file.write(buf)
+
 	@inlineCallbacks
 	def write(self, offset,buf, ctx=None):
 		"""Write file, updating mtime, possibly updating size"""
 		# TODO: use fstat() for size info, access may be concurrent
-		def _write():
-			with self.lock:
-				self.file.seek(offset)
-				self.file.write(buf)
-		
-		yield deferToThread(_write)
+		yield deferToThread(self._write,offset,buf)
 		end = offset+len(buf)
+		if self.node.cache:
+			yield self.node.cache.has(offset,end)
+
 		self.node.mtime = nowtuple()
 		if self.node.size < end:
 			self.node.size = end

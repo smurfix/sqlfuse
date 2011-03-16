@@ -28,7 +28,7 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
 from sqlfuse import DBVERSION
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE
-from sqlfuse.background import RootUpdater,Recorder,NodeCollector
+from sqlfuse.background import RootUpdater,Recorder,NodeCollector,CacheRecorder
 from sqlfuse.node import SqlNode
 from sqlmix.twisted import DbPool,NoData
 
@@ -41,6 +41,8 @@ class DummyRecorder(DummyQuit):
 	def new(self,inode): pass
 	def change(self,inode,data): pass
 	def finish_write(self,inode): pass
+class DummyChanger(DummyQuit):
+	def note(self,inode): pass
 class DummyRooter(DummyQuit):
 	def d_inode(self,delta): pass
 	def d_dir(self,delta): pass
@@ -86,6 +88,7 @@ class SqlFuse(FileSystem):
 	rooter = DummyRooter()
 	record = DummyRecorder()
 	collector = DummyQuit()
+	changer = DummyChanger()
 	db = DummyQuit()
 	servers = []
 
@@ -96,6 +99,8 @@ class SqlFuse(FileSystem):
 	diratime = 0
 
 	shutting_down = False
+
+	topology = None
 
 	def __init__(self,*a,**k):
 		self._slot = {}
@@ -297,6 +302,24 @@ class SqlFuse(FileSystem):
 		returnValue( xid )
 
 	@inlineCallbacks
+	def each_node(self,name,*a,**k):
+		e1 = None
+		if not self.topology:
+			raise RuntimeError("No topology information available")
+		for dest,node in self.topology:
+			try:
+				if dest == node:
+					res = yield getattr(self.remote[dest],"remote_"+name)(*a,**k)
+				else:
+					res = yield self.remote[dest].remote_exec(node,name,*a,**k)
+			except Exception as e:
+				if e1 is None:
+					e1 = e
+			else:
+				returnValue(res)
+		raise e1
+
+	@inlineCallbacks
 	def init_db(self,db,node):
 		"""\
 			Setup the database part of the file system's operation.
@@ -334,6 +357,8 @@ class SqlFuse(FileSystem):
 		if opt.diratime: self.diratime = {'no':0,'read':1,'access':2}[opt.diratime]
 		self.rooter = RootUpdater(self)
 		self.rooter.start()
+		self.changer = CacheRecorder(self)
+		self.changer.start()
 		self.record = Recorder(self)
 		self.record.start()
 		self.collector = NodeCollector(self)
@@ -390,7 +415,9 @@ class SqlFuse(FileSystem):
 		self.record = None
 		self.collector.quit()
 		self.collector = None
-		reactor.iterate(delay=0.01)
+		self.changer.quit()
+		self.changer = None
+		reactor.iterate(delay=0.05)
 		#self.db.stop() # TODO: shutdown databases
 		#reactor.iterate(delay=0.05)
 		self.db.close()

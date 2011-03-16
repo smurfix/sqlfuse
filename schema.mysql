@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.4');
+insert into info(name,value) values('version','0.4.5');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -146,6 +146,21 @@ insert into info(name,value) values('nodenamelen','255');
 insert into info(name,value) values('nodepathlen','1024');
 insert into info(name,value) values('secretlen','64');
 
+-- 
+-- Files can be cached locally, in which case not the whole file may be
+-- present.
+DROP TABLE IF EXISTS `cache`;
+CREATE TABLE `cache` (
+  `id` int(10) unsigned NOT NULL auto_increment,
+  `inode` bigint(20) unsigned NOT NULL,
+  `node` int(10) unsigned NOT NULL,
+  `cached` varchar(1023) null, -- known-data range
+  PRIMARY KEY (`id`),
+  unique key `inodeloc` (node,inode),
+  key `fk_cache_inode` (inode),
+  constraint `fk_cache_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade,
+  constraint `fk_cache_node` foreign key(`node`) references `node`(`id`) on delete cascade
+) DEFAULT CHARSET=utf8;
 -- 
 -- Remember file updates (and deletes). We need this to copy files.
 -- 

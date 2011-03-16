@@ -25,7 +25,7 @@ from twisted.python import log
 from twisted.python.hashlib import md5
 from twisted.spread import pb
 
-from sqlfuse.connect import INodeClient,INodeServer,INodeServerFactory, build_callouts
+from sqlfuse.connect import INodeClient,INodeServer,INodeServerFactory
 from sqlfuse.node import SqlNode
 
 class InvalidResponse(error.UnauthorizedLogin):
