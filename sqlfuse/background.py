@@ -186,10 +186,10 @@ class CacheRecorder(BackgroundJob):
 	def work(self):
 		nn = self.nodes
 		self.nodes = set()
-		with self.tree.db() as db:
-			for n in nn:
-				if not n.cache:
-					continue
+		for n in nn:
+			if not n.cache:
+				continue
+			with self.tree.db() as db:
 				if not n.cache.available.equals(0,n.size):
 					if n.cache.is_new:
 						yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.nodeid, node=self.tree.node_id, data=n.cache.available.encode())
@@ -205,6 +205,7 @@ class CacheRecorder(BackgroundJob):
 						ipath=n._file_path()
 						yield deferToThread(os.rename,ipath+"C",ipath)
 						yield db.Do("delete from cache where inode=${inode} and node=${node}", inode=n.nodeid, node=self.tree.node_id, _empty=True)
+						yield db.Do("update inode set copies=copies+1 where id=${inode}", inode=n.nodeid)
 					finally:
 						n.cache.done_lock.release()
 						n.cache = None
