@@ -170,22 +170,16 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 
 	@inlineCallbacks
 	def remote_readfile(self,caller,inum,reader,missing):
-		print("READ",caller,inum,reader,missing)
-
 		node = SqlInode(self.filesystem,inum)
 		with self.filesystem.db() as db:
 			yield node._load(db)
-		print("READ NODE",node)
 		if node.cache:
 			avail = node.cache.available & missing
 			missing -= avail
-			print("READ A/M",avail,missing)
 		else:
 			avail = missing
 			missing = ()
-			print("READ A",avail)
 		if avail:
-			print("READ HAS",avail)
 			h = yield node.open(os.O_RDONLY)
 			def split(av):
 				for a,b in av:
@@ -195,18 +189,13 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 						b -= MAX_BLOCK
 					yield a,b
 			for a,b in split(avail):
-				print("READ GET",a,b)
 				try:
 					data = yield h.read(a,b)
-					print("READ DATA",repr(data))
 				except Exception as e:
-					print("READ EXCD",e)
 					break
 				try:
 					yield reader.callRemote("data",a,data)
-					print("READ CALLED",repr(data))
 				except Exception as e:
-					print("READ EXC",e)
 					break
 			h.release()
 		print("READ NODATA",missing)

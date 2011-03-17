@@ -41,19 +41,18 @@ class Range(list,Copyable):
 		else:
 			return "-"
 
+	# Twisted definitely has way too many state reading and writing function names
 	def getStateToCopy(self):
 		return self.__getstate__()
 	def getStateFor(self,j):
 		return self.__getstate__()
-	def setStateFor(self,j,s):
-		return self.__setstate__(s)
 	def __getstate__(self):
-		s = self.encode()
-		print("ENCODE",self,"to",s)
-		return s
+		return self.encode()
+
+	def setStateFor(self,j,s):
+		self.__setstate__(s)
 	def __setstate__(self,s):
 		self.decode(s)
-		print("DECODE",s,"to",self)
 		
 	def sum(self):
 		l = 0

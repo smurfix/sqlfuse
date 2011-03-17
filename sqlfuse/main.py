@@ -319,11 +319,9 @@ class SqlFuse(FileSystem):
 	def each_node(self,name,*a,**k):
 		e1 = None
 		if not self.topology:
-			print("EACH","no nodes")
 			raise RuntimeError("No topology information available")
 		#for dest in self.topology.keys():
 		for dest in self.neighbors:
-			print("EACH",dest,self.topology[dest])
 			try:
 				d = self.call_node(dest,name,*a,**k)
 				def pr(r):
@@ -331,7 +329,6 @@ class SqlFuse(FileSystem):
 					return r
 				d.addErrback(pr)
 				res = yield d
-				print("EACH",dest,res)
 			except Exception as e:
 				print_exc()
 				if e1 is None:
@@ -396,7 +393,7 @@ class SqlFuse(FileSystem):
 				m = m.NodeServerFactory(self)
 				yield m.connect()
 			except NoLink:
-				print("No link to node",)
+				print("No link to node")
 			except Exception:
 				traceback.print_exc()
 			else:
