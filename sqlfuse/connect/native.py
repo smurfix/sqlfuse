@@ -21,6 +21,7 @@ from twisted.cred import portal, checkers, credentials, error
 from twisted.internet import reactor
 from twisted.internet import error as err
 from twisted.internet.defer import inlineCallbacks
+from twisted.manhole import service
 from twisted.python import log
 from twisted.python.hashlib import md5
 from twisted.spread import pb
@@ -42,18 +43,19 @@ class UnknownSource(error.LoginFailed):
 
 
 def build_response(challenge, password):
-    """Respond to a challenge.
+	"""\
+		Respond to a challenge.
 
-    This is useful for challenge/response authentication.
-    """
-    m = md5()
-    m.update(password)
-    hashedPassword = m.digest()
-    m = md5()
-    m.update(hashedPassword)
-    m.update(challenge)
-    doubleHashedPassword = m.digest()
-    return doubleHashedPassword
+		This is useful for challenge/response authentication.
+		"""
+	m = md5()
+	m.update(password)
+	hashedPassword = m.digest()
+	m = md5()
+	m.update(hashedPassword)
+	m.update(challenge)
+	doubleHashedPassword = m.digest()
+	return doubleHashedPassword
 
 
 ###############
@@ -238,26 +240,38 @@ class _Portal(object):
 		log in ...
 		"""
 	implements(pb.IPBRoot)
-	def __init__(self, filesystem):
+	def __init__(self, portal, filesystem):
+		self.manhole_portal = portal
 		self.filesystem = filesystem
 
 	def rootObject(self, broker):
 		"""\
 			... so we return an object which supports exactly that.
 			"""
-		return _Login1Wrapper(self.filesystem, broker)
+		return _Login1Wrapper(self.manhole_portal, self.filesystem, broker)
 
 class _Login1Wrapper(object,pb.Referenceable):
 	"""\
 		First step when logging in a client.
 		"""
-	def __init__(self, filesystem,broker):
+	def __init__(self, portal, filesystem,broker):
+		self.manhole_portal = portal
 		self.filesystem = filesystem
 		self.broker = broker
 		self.dead = False
 
+	def remote_login(self, username):
+		"""\
+			This is the login method for twisted.manhole connections.
+			"""
+		if self.manhole_portal is None:
+			raise NotImplementedError("This server doesn't have manhole access")
+		c = open("/dev/urandom","r").read(63)
+		return c, _ManholeChallenger(self.manhole_portal, self.broker, username, c)
+
 	def remote_login1(self, src,dest,c):
 		"""\
+			This is the login method for server↔server connections.
 			The client supplies source and destination node IDs, and a
 			challenge string for authorizing the server to the client.
 
@@ -289,6 +303,36 @@ class _Login1Wrapper(object,pb.Referenceable):
 		d.addCallback(cbsi1)
 		d.addErrback(log.err)
 		return d
+
+class _ManholeChallenger(pb.Referenceable, pb._JellyableAvatarMixin):
+	"""
+	Called with response to password challenge.
+	"""
+	implements(credentials.IUsernameHashedPassword, pb.IUsernameMD5Password)
+
+	def __init__(self, portal, broker, username, challenge):
+		self.portal = portal
+		self.broker = broker
+		self.username = username
+		self.challenge = challenge
+
+	def remote_respond(self, response, mind):
+		self.response = response
+		d = self.portal.login(self, mind, pb.IPerspective)
+		d.addCallback(self._cbLogin)
+		return d
+
+	# IUsernameHashedPassword:
+	def checkPassword(self, password):
+		return self.checkMD5Password(md5(password).digest())
+
+	# IUsernameMD5Password
+	def checkMD5Password(self, md5Password):
+		md = md5()
+		md.update(md5Password)
+		md.update(self.challenge)
+		correct = md.digest()
+		return self.response == correct
 
 class _Login2Wrapper(object,pb.Referenceable):
 	"""\
@@ -336,10 +380,14 @@ NodeServer = NodeAdapter
 NodeClient = NodeAdapter
 def _build_callout(name):
 	def _callout(self,*a,**k):
-		self.proxy.callRemote(name,*a,**k)
+		print("CALLOUT",name,a,k)
+		return self.proxy.callRemote(name,*a,**k)
+	return _callout
 def _build_callin(name):
 	def _callin(self,*a,**k):
-		getattr(self.node,"remote_"+name)(*a,**k)
+		print("CALLIN",name,a,k)
+		return getattr(self.node,"remote_"+name)(*a,**k)
+	return _callin
 for name in SqlNode.remote_names():
 	if not hasattr(NodeAdapter,"remote_"+name):
 		setattr(NodeAdapter,"remote_"+name,_build_callin(name))
@@ -353,8 +401,24 @@ class NodeServerFactory(object):
 	def __init__(self, filesystem):
 		self.filesystem = filesystem
 	
+	@inlineCallbacks
 	def connect(self):
-		p = _Portal(self.filesystem)
+		ns = {}
+
+		from sqlfuse import fs
+		ns["fs"] = self.filesystem
+		ns["inodes"] = fs._Inode
+
+		user="admin"
+		with self.filesystem.db() as db:
+			password,= yield db.DoFn("select `password` from node where id=${node}", node=self.filesystem.node_id)
+		if password:
+			mp = portal.Portal( service.Realm(service.Service(True,ns)),
+			    [checkers.InMemoryUsernamePasswordDatabaseDontUse(**{user: password})])
+		else:
+			mp = None
+
+		p = _Portal(mp, self.filesystem)
 		self.listener = reactor.listenTCP(self.filesystem.port, pb.PBServerFactory(p))
 	
 	def disconnect(self):

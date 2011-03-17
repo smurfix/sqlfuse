@@ -17,7 +17,10 @@ Right now, only native interconnection is supported.
 
 """
 
-__all__ = ('SqlNode',)
+__all__ = ('SqlNode','NoLink','DataMissing')
+
+import os
+from traceback import print_exc
 
 from zope.interface import implements
 
@@ -28,12 +31,23 @@ from twisted.internet.defer import inlineCallbacks,Deferred
 from twisted.internet import error as err
 
 from sqlfuse.connect import INode
+from sqlfuse.fs import SqlInode
 from sqlmix import NoData
 
 INITIAL_RETRY=1
 MAX_RETRY=60
+MAX_BLOCK=65536
 
 class NoLink(RuntimeError):
+	"""\
+		There's no record for connecting to a remote node.
+		"""
+	pass
+class DataMissing(BufferError):
+	"""\
+		A read callback didn't get all the data, because the local cache
+		didn't have them.
+		"""
 	pass
 
 class SqlNode(pb.Avatar,pb.Referenceable):
@@ -56,10 +70,13 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		self.retry_timer = None
 		if self._server or self._connector:
 			return
-		self.connect()
+		d = self.connect()
+		d.addErrback(log.err)
 
-	@inlineCallbacks
 	def connect(self):
+		return self._connect()
+	@inlineCallbacks
+	def _connect(self):
 		"""\
 			Try to connect to this node's remote side.
 			"""
@@ -75,7 +92,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				try:
 					m, = yield db.DoFn("select method from updater where src=${src} and dest=${dest}",src=self.filesystem.node_id,dest=self.node_id)
 				except NoData:
-					raise NoLink
+					raise NoLink(self.node_id)
 				m = __import__("sqlfuse.connect."+m, fromlist=('NodeClient',))
 			m = m.NodeClient(self)
 			self._connector = m.connect()
@@ -100,23 +117,23 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			self._connector = None
 
 
-	def server_connected(self, server=None):
+	def server_connected(self, server):
 		if self._server is not None and self._server is not server:
 			self._server.disconnect()
 		self._server = server
 
-	def server_disconnected(self, server=None):
+	def server_disconnected(self, server):
 		if self._server is server:
 			self._server = None
 			if self.node_id is not None:
 				self.retry_timer = reactor.callLater(INITIAL_RETRY, self.connect_timer)
 
-	def client_connected(self, client=None):
+	def client_connected(self, client):
 		self._clients.add(client)
 
-	def client_disconnected(self, client=None):
+	def client_disconnected(self, client):
 		try: self._clients.remove(client)
-		except KeyError: pass
+		except (ValueError,KeyError): pass
 
 
 	def disconnect(self):
@@ -128,14 +145,75 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		if r is not None:
 			self._server = None
 			r.transport.loseConnection()
+
 		r = self._connector
 		if r is not None:
 			self._connector = None
 			r.cancel()
 
+		r = self._clients
+		if r:
+			self._clients = []
+			for c in r:
+				c.transport.loseConnection()
+
 	def remote_echo(self,msg):
 		return msg
+	
+	def remote_exec(self,node,name,*a,**k):
+		if node not in self.topology:
+			raise NoLink(node)
 
+		# TODO: cache calls to stuff like reading from a file
+		# TODO: prevent cycles
+		return self.filesystem.call_node(node,name,*a,**k)
+
+	@inlineCallbacks
+	def remote_readfile(self,caller,inum,reader,missing):
+		print("READ",caller,inum,reader,missing)
+
+		node = SqlInode(self.filesystem,inum)
+		with self.filesystem.db() as db:
+			yield node._load(db)
+		print("READ NODE",node)
+		if node.cache:
+			avail = node.cache.available & missing
+			missing -= avail
+			print("READ A/M",avail,missing)
+		else:
+			avail = missing
+			missing = ()
+			print("READ A",avail)
+		if avail:
+			print("READ HAS",avail)
+			h = yield node.open(os.O_RDONLY)
+			def split(av):
+				for a,b in av:
+					while b > MAX_BLOCK:
+						yield a,MAX_BLOCK
+						a += MAX_BLOCK
+						b -= MAX_BLOCK
+					yield a,b
+			for a,b in split(avail):
+				print("READ GET",a,b)
+				try:
+					data = yield h.read(a,b)
+					print("READ DATA",repr(data))
+				except Exception as e:
+					print("READ EXCD",e)
+					break
+				try:
+					yield reader.callRemote("data",a,data)
+					print("READ CALLED",repr(data))
+				except Exception as e:
+					print("READ EXC",e)
+					break
+			h.release()
+		print("READ NODATA",missing)
+		if missing:
+			raise DataMissing(missing)
+		
+	
 
 	@classmethod
 	def remote_names(cls):
@@ -147,7 +225,10 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	def _final_setup(cls):
 		def make_callout(name):
 			def _callout(self, *a,**k):
-				return getattr(self._server,name)(self,*a,**k)
+				d = self.connect()
+				d.addErrback(log.err)
+				d.addCallback(lambda r: getattr(self._server,"do_"+name)(self,*a,**k))
+				return d
 			return _callout
 			
 		for name in cls.remote_names():

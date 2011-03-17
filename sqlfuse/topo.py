@@ -9,9 +9,9 @@
 
 from __future__ import division, print_function, absolute_import
 
-__all__ = ("generate_map",)
+__all__ = ("next_hops",)
 
-from collections import defaultdict
+from collections import defaultdict #,OrderedDict ## Py2.7
 import sys
 
 def next_hops(topo, node):
@@ -36,7 +36,9 @@ def next_hops(topo, node):
 	for n in topo.keys():
 		distance[n] = None
 	distance[node] = 0
-	res = []
+	#res = OrderedDict()
+	resm = {}
+	resl = []
 
 	# ideally we'd use a heap to find the smallest item, but the list is
 	# usually rather small and heapq doesn't have a configurable sort
@@ -65,12 +67,12 @@ def next_hops(topo, node):
 					else:
 						source[dest] = dest
 		if n != node and n in source:
-			res.append((n,source[n]))
+			#res[n] = source[n]
+			resm[n] = source[n]
+			resl.append(n)
 		del topo[n]
 
-	#return source,res
-	#return source
-	return res
+	return resm,resl
 
 
 	pass

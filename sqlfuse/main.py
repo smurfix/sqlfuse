@@ -21,6 +21,7 @@ TODO: It's a protocol. Treat it as such.
 """
 
 import errno, os, stat, sys, traceback
+from traceback import print_exc
 from twistfuse.filesystem import FileSystem
 from twistfuse.kernel import FUSE_ATOMIC_O_TRUNC,FUSE_ASYNC_READ,FUSE_EXPORT_SUPPORT,FUSE_BIG_WRITES
 from twisted.internet import reactor
@@ -29,7 +30,7 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 from sqlfuse import DBVERSION
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE
 from sqlfuse.background import RootUpdater,Recorder,NodeCollector,CacheRecorder
-from sqlfuse.node import SqlNode
+from sqlfuse.node import SqlNode,NoLink
 from sqlmix.twisted import DbPool,NoData
 
 
@@ -100,7 +101,8 @@ class SqlFuse(FileSystem):
 
 	shutting_down = False
 
-	topology = None
+	topology = None  # .topology wants to be an OrderedDict,
+	neighbors = None # but that's py2.7 and I'm too lazy to backport that.
 
 	def __init__(self,*a,**k):
 		self._slot = {}
@@ -301,18 +303,37 @@ class SqlFuse(FileSystem):
 
 		returnValue( xid )
 
+	def call_node(self,dest,name,*a,**k):
+		try:
+			node = self.topology[dest]
+			rem = self.remote[node]
+		except KeyError:
+			raise NoLink(dest)
+
+		if dest == node:
+			return getattr(rem,"do_"+name)(*a,**k)
+		else:
+			return rem.remote_exec(node,name,*a,**k)
+
 	@inlineCallbacks
 	def each_node(self,name,*a,**k):
 		e1 = None
 		if not self.topology:
+			print("EACH","no nodes")
 			raise RuntimeError("No topology information available")
-		for dest,node in self.topology:
+		#for dest in self.topology.keys():
+		for dest in self.neighbors:
+			print("EACH",dest,self.topology[dest])
 			try:
-				if dest == node:
-					res = yield getattr(self.remote[dest],"remote_"+name)(*a,**k)
-				else:
-					res = yield self.remote[dest].remote_exec(node,name,*a,**k)
+				d = self.call_node(dest,name,*a,**k)
+				def pr(r):
+					r.printTraceback(file=sys.stderr)
+					return r
+				d.addErrback(pr)
+				res = yield d
+				print("EACH",dest,res)
 			except Exception as e:
+				print_exc()
 				if e1 is None:
 					e1 = e
 			else:
@@ -349,6 +370,7 @@ class SqlFuse(FileSystem):
 		super(SqlFuse,self).__init__(root=root, filetype=SqlFile, dirtype=SqlDir)
 		returnValue( None )
 
+	@inlineCallbacks
 	def init(self, opt):
 		"""\
 			Last step before running the file system mainloop.
@@ -356,14 +378,14 @@ class SqlFuse(FileSystem):
 		if opt.atime: self.atime = {'no':0,'mtime':1,'yes':2}[opt.atime]
 		if opt.diratime: self.diratime = {'no':0,'read':1,'access':2}[opt.diratime]
 		self.rooter = RootUpdater(self)
-		self.rooter.start()
+		yield self.rooter.start()
 		self.changer = CacheRecorder(self)
-		self.changer.start()
+		yield self.changer.start()
 		self.record = Recorder(self)
-		self.record.start()
+		yield self.record.start()
 		self.collector = NodeCollector(self)
-		self.collector.start()
-		self.connect_all()
+		yield self.collector.start()
+		yield self.connect_all()
 	
 	@inlineCallbacks
 	def connect_all(self):
@@ -373,6 +395,8 @@ class SqlFuse(FileSystem):
 				m = __import__("sqlfuse.connect."+m, fromlist=('NodeServerFactory',))
 				m = m.NodeServerFactory(self)
 				yield m.connect()
+			except NoLink:
+				print("No link to node",)
 			except Exception:
 				traceback.print_exc()
 			else:

@@ -150,6 +150,7 @@ def options(mode=None,args=None):
 		Baddnode.add_argument("name", help="Node name")
 		Baddnode.add_argument("root", help="use this root")
 		Baddnode.add_argument("files", help="Path to storage space")
+		Baddnode.add_argument("access", help="Secret for management login")
 
 		Baddroot = Badd.add_parser("root",help="hierarchy root")
 		Baddroot.set_defaults(mode2="root")
@@ -194,6 +195,7 @@ def options(mode=None,args=None):
 		Bupdatenode.add_argument("--name", dest="newname", help="New name")
 		Bupdatenode.add_argument("--storage", dest="files", help="New storage path")
 		Bupdatenode.add_argument("--secret", action='store_true', dest="secret", help="Reset the node-specific secret")
+		Bupdatenode.add_argument("--access", action='store', help="New management password")
 		Buna = Bupdatenode.add_mutually_exclusive_group()
 		Buna.add_argument("--address", help="local IP address for SQLfuse connections")
 		Buna.add_argument("--anyaddress", action='store_false',dest='address', help="accept SQLfuse connections on all local addresses")

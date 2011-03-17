@@ -12,10 +12,11 @@ from __future__ import division, print_function, absolute_import
 __all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder")
 
 from collections import defaultdict
-import sys
+import os, sys
 
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred
+from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred, Deferred
+from twisted.internet.threads import deferToThread
 
 from sqlmix import NoData
 from sqlfuse.fs import BLOCKSIZE
@@ -183,18 +184,30 @@ class CacheRecorder(BackgroundJob):
 
 	@inlineCallbacks
 	def work(self):
-		n = self.nodes
+		nn = self.nodes
 		self.nodes = set()
 		with self.tree.db() as db:
-			for n in self.nodes:
-				if n.cache:
+			for n in nn:
+				if not n.cache:
+					continue
+				if not n.cache.available.equals(0,n.size):
 					if n.cache.is_new:
-						yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.inum, node=self.tree.node_id, data=n.cache.available.encode())
+						yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.nodeid, node=self.tree.node_id, data=n.cache.available.encode())
 						n.cache.is_new = False
 					else:
-						yield db.Do("update cache set cached=${data} where inode=${inode} and node=${node}", inode=n.inum, node=self.tree.node_id, data=n.cache.available.encode(), _empty=True)
+						yield db.Do("update cache set cached=${data} where inode=${inode} and node=${node}", inode=n.nodeid, node=self.tree.node_id, data=n.cache.available.encode(), _empty=True)
 				else:
-					yield db.Do("delete from cache where inode=${inode} and node=${node}", inode=n.inum, node=self.tree.node_id, _empty=True)
+					yield n.cache.done_lock.acquire()
+					try:
+						if n.cache.file:
+							yield deferToThread(n.cache.file.close)
+							n.cache.file = None
+						ipath=n._file_path()
+						yield deferToThread(os.rename,ipath+"C",ipath)
+						yield db.Do("delete from cache where inode=${inode} and node=${node}", inode=n.nodeid, node=self.tree.node_id, _empty=True)
+					finally:
+						n.cache.done_lock.release()
+						n.cache = None
 
 
 	def note(self,node):
@@ -229,12 +242,21 @@ class NodeCollector(BackgroundJob):
 			if k not in nodes:
 				del self.tree.remote[k]
 
-		self.tree.topology = topo
+		#self.tree.topology = topo
+		self.tree.topology,self.tree.neighbors = topo
 
 		# add new nodes
 		for k in nodes:
 			if k not in self.tree.remote:
-				self.tree.remote[k].connect() # yes, this works, .remote auto-extends
+				d = self.tree.remote[k].connect() # yes, this works, .remote auto-extends
+				def pr(r):
+					print("Connect to",k,"::",r)
+				d.addErrback(pr)
+
+				e = Deferred()
+				d.addBoth(lambda r: e.callback(None))
+				yield e
+
 
 	
 	@inlineCallbacks

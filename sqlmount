@@ -40,8 +40,6 @@ sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 			return h.mount(fs,opt.mountpoint)
 		def did_init2(r):
 			return fs.init(opt)
-		def did_init3(r):
-			fs.connect_all()
 		d.addCallback(did_init)
 		d.addCallback(did_init2)
 		def did_error(e):

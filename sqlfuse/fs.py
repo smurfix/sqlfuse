@@ -21,7 +21,7 @@ from weakref import WeakValueDictionary
 from twistfuse.filesystem import Inode,File,Dir
 from twistfuse.kernel import XATTR_CREATE,XATTR_REPLACE
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue
+from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 from twisted.internet.threads import deferToThread
 from twisted.spread import pb
 
@@ -31,31 +31,106 @@ from sqlmix.twisted import NoData
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
 inode_xattrs = inode_attrs.union(frozenset("copies target".split()))
 
+class NotKnown:
+	pass
+class NoCachedData(BufferError):
+	"""\
+		The system could not get the data for this file.
+		(Stale cache, and no connection to any server which has it)
+		"""
+	pass
+
+shutting_down = False
+def _shut():
+	global shutting_down
+	shutting_down = True
+reactor.addSystemEventTrigger('before', 'shutdown', _shut)
+
 class Cache(object,pb.Referenceable):
 	is_new = False
+	file_closer = None
+	file = None
 
 	def __init__(self,node):
 		self.node = node
 		self.q = []
 		self.available = None
 		self.in_progress = Range()
+		self.lock = Lock() # protect file read/write
+		self.done_lock = DeferredLock() # protect cache close-down
 
+	def __del__(self):
+		if self.file_closer:
+			self.file_closer.cancel()
+			self.file_closer = None
+		self._close()
+
+	@inlineCallbacks
+	def _close(self):
+		self.file_closer = None
+		if self.file:
+			if shutting_down:
+				self.file.close()
+				self.file = None
+			else:
+				yield self.done_lock.acquire()
+				try:
+					yield reactor.callInThread(self.file.close)
+					self.file = None
+				finally:
+					self.done_lock.release()
+
+
+	def __repr__(self):
+		if self.in_progress:
+			return "<C %d %s +%s>" % (self.node.nodeid,self.available,self.in_progress)
+		else:
+			return "<C %d %s>" % (self.node.nodeid,self.available)
+	__str__ = __repr__
+
+	@inlineCallbacks
 	def _load(self,db):
 		try:
-			cache, = yield db.DoFn("select cache from cache where node=${node} and inode=${inum}", node=self.filesystem.node_id, inum=self.node.nodeid, _dict=True)
+			cache, = yield db.DoFn("select cached from cache where node=${node} and inode=${inum}", node=self.node.filesystem.node_id, inum=self.node.nodeid)
 		except NoData:
-			self.cache = Range()
+			self.available = Range()
 			self.is_new = True
 		else:
-			self.cache = Range(cache)
+			self.available = Range(cache)
+
+	def _read(self,offset,length):
+		with self.lock:
+			if not self.file:
+				ipath=self.node._file_path()+"C"
+				self.file = open(ipath,"r+")
+			self.file.seek(offset)
+			return self.file.read(length)
+
+	def _write(self,offset,data):
+		with self.lock:
+			if not self.file:
+				ipath=self.node._file_path()+"C"
+				try:
+					self.file = open(ipath,"r+")
+				except EnvironmentError as e:
+					if e.errno == errno.ENOENT:
+						self.file = open(ipath,"w+")
+					else:
+						raise
+			self.file.seek(offset)
+			self.file.write(data)
 
 	@inlineCallbacks
 	def remote_data(self, offset, data):
 		"""\
 			Data arrives.
 			"""
-		yield self.node._write(offset,data)
-		self.has(offset,offset+len(data))
+		if self.file_closer:
+			self.file_closer.cancel()
+			self.file_closer = None
+		yield reactor.callInThread(self._write,offset,data)
+		yield self.has(offset,offset+len(data))
+		self.file_closer = reactor.callLater(10,reactor.callInThread,self._close)
 
 	def has(self,offset,end):
 		"""\
@@ -64,14 +139,11 @@ class Cache(object,pb.Referenceable):
 		self.in_progress.delete(offset,end)
 		chg = self.available.add(offset,end)
 
-		if self.available.equals(0,self.node.size):
-			del _Cache[self.node.nodeid]
-			self.node.cache = None # kill myself. more or less
-		if chg:
-			self.tree.changer.note(self.node) # save in the database
+		if chg or self.available.equals(0,self.node.size):
+			self.node.filesystem.changer.note(self.node) # save in the database
 			self._trigger_waiters()
 
-	def trigger_waiters(self):
+	def _trigger_waiters(self):
 		q = self.q
 		self.q = []
 		for d in q:
@@ -94,7 +166,7 @@ class Cache(object,pb.Referenceable):
 					yield self.node.filesystem.each_node("readfile",self.node.nodeid,self,missing)
 				finally:
 					self.in_progress -= missing
-					self._trigger_waiters()
+
 					returnValue( not(r - self.available) ) # flag whether data is here
 			else:
 				q = Deferred()
@@ -119,6 +191,7 @@ class SqlInode(Inode):
 #		'timestamp',     # time the attributes have been read from disk
 #		'tree',          # Operations object
 #		'changes',       # Range of bytes written (but not saved in a change record)
+#		'cache',         # Range of bytes read from remote nodes
 #		'inuse',         # open files on this inode? <0:delete after close
 #		'write_timer',   # attribute write timer
 #		]
@@ -170,6 +243,8 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
 		"""Existing file."""
+		with self.filesystem.db() as db:
+			yield self._load(db)
 		if stat.S_ISDIR(self.mode):
 			raise IOError(errno.EISDIR)
 		f = self.filesystem.FileType(self,flags)
@@ -552,6 +627,7 @@ class SqlInode(Inode):
 		self.timestamp = None
 		self.inuse = 0
 		self.changes = Range()
+		self.cache = NotKnown
 		self.write_timer = None
 		# defer anything we only need when loaded to after _load is called
 
@@ -562,19 +638,15 @@ class SqlInode(Inode):
 			raise RuntimeError("tried to load inode without ID")
 
 		if self.seq:
-			## TODO: also check the timestamp, don't load when recent enough
-			seq, = yield db.DoFn("select seq from inode where id=${inode}", inode=self.nodeid)
-			if self.seq != seq:
-				# Oops! somebody else changed the inode
-				print("!!! inode_changed",self.nodeid,self.seq,seq,self.updated)
-				self.seq = seq
-				yield self._save(db)
-			else:
-				returnValue( None )
+			yield self._save(db)
+
+		d = yield db.DoFn("select * from inode where id=${inode}", inode=self.nodeid, _dict=1)
+		if self.seq is not None and self.seq == d["seq"]:
+			returnValue( None )
 
 		self.attrs = {}
 		self.updated = set()
-		d = yield db.DoFn("select * from inode where id=${inode}", inode=self.nodeid, _dict=1)
+
 		for k in inode_xattrs:
 			if k.endswith("time"):
 				v = (d[k],d[k+"_ns"])
@@ -582,16 +654,20 @@ class SqlInode(Inode):
 				v = d[k]
 			self.attrs[k] = v
 		self.seq = d["seq"]
+		self.size = d["size"]
 		self.old_size = d["size"]
 		self.timestamp = nowtuple()
 
-		ipath=self._file_path()
-		if os.path.exists(ipath):
-			self.cache = None
-		else:
-			self.cache = Cache(self)
-			yield self.cache._load(db)
-
+		if self.cache is NotKnown:
+			if stat.S_ISREG(self.mode):
+				ipath=self._file_path()
+				if os.path.exists(ipath):
+					self.cache = None
+				else:
+					self.cache = Cache(self)
+					yield self.cache._load(db)
+			else:
+				self.cache = None
 		returnValue( None )
 	
 	def __getitem__(self,key):
@@ -615,7 +691,7 @@ class SqlInode(Inode):
 				self.write_timer = reactor.callLater(self.filesystem.ATTR_VALID[0]/2, self._writer)
 
 	@inlineCallbacks
-	def _save(self, db):
+	def _save(self, db, new_seq=None):
 		"""Save local attributes"""
 		if not self.nodeid: return
 		ch = None
@@ -642,26 +718,32 @@ class SqlInode(Inode):
 
 		if args:
 			try:
+				if new_seq:
+					raise NoData # don't even try
 				yield db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.nodeid, seq=self.seq, **args)
 			except NoData:
 				try:
-					seq,self.old_size = yield db.DoFn("select seq,size from inode where id=${inode}", inode=self.nodeid)
+					seq,self.size = yield db.DoFn("select seq,size from inode where id=${inode}", inode=self.nodeid)
 				except NoData:
 					# deleted inode
 					print("!!! inode_deleted",self.nodeid,self.seq,self.updated)
 					self.nodeid = None
 				else:
 					# warn
-					print("!!! inode_changed",self.nodeid,self.seq,seq,repr(args))
-					yield db.Do("update inode set seq=${seq}+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.nodeid, seq=seq, **args)
+					print("!!! inode_changed",self.nodeid,self.seq,seq,new_seq,repr(args))
+					if new_seq:
+						assert new_seq == seq+1
+					else:
+						new_seq=seq+1
+					yield db.Do("update inode set seq=${new_seq}, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.nodeid, seq=seq, new_seq=new_seq, **args)
 					self.seq = seq+1
 
 			else:
 				self.seq += 1
-			if "size" in self.attrs and self.attrs["size"] != self.old_size:
+			if "size" in args and self.size != self.old_size:
 				def do_size():
 					self.filesystem.rooter.d_size(self.old_size,self.attrs["size"])
-					self.old_size = self.attrs["size"]
+					self.old_size = self.size
 				db.call_committed(do_size)
 		if ch:
 			self.filesystem.record.change(self,ch)
@@ -712,6 +794,7 @@ class SqlFile(File):
 	"""Operations on open files.
 	"""
 	mtime = None
+	file = None
 
 	def __init__(self, node,mode):
 		"""Open the file. Also remember that the inode is in use
@@ -726,13 +809,19 @@ class SqlFile(File):
 	def open(self, ctx=None):
 		mode = flag2mode(self.mode)
 		ipath=self.node._file_path()
-		if not os.path.exists(ipath) or self.mode & os.O_TRUNC:
+		if self.mode & os.O_TRUNC:
 			self.node.copies = 1 # ours
 			self.node.size = 0
 			self.node.filesystem.record.new(self.node)
 		elif mode[0] == "w":
 			mode = "r+"
-		self.file = yield deferToThread(open,ipath,mode)
+
+		try:
+			self.file = yield deferToThread(open,ipath,mode)
+		except EnvironmentError as e:
+			if e.errno != errno.ENOENT:
+				raise
+
 		if self.mode & os.O_TRUNC:
 			yield deferToThread(os.ftruncate,self.file.fileno(),0)
 		returnValue( None )
@@ -740,15 +829,25 @@ class SqlFile(File):
 	@inlineCallbacks
 	def read(self, offset,length, ctx=None):
 		"""Read file, updating atime"""
+		if offset >= self.node.size:
+			returnValue( "" )
+		if offset+length > self.node.size:
+			length = self.node.size-offset
+
 		self.node.do_atime()
-		#self.node.atime = nowtuple()
-		if self.node.cache:
-			yield self.node.cache.get_data(offset,length)
-		def _read():
-			with self.lock:
-				self.file.seek(offset)
-				return self.file.read(length)
-		data = yield deferToThread(_read)
+		cache = self.node.cache
+		if cache:
+			res = yield cache.get_data(offset,length)
+			if not res:
+				raise NoCachedData(self.node.nodeid)
+			data = yield deferToThread(cache._read,offset,length)
+		else:
+			def _read():
+				with self.lock:
+					self.file.seek(offset)
+					return self.file.read(length)
+			data = yield deferToThread(_read)
+
 		returnValue( data )
 
 	def _write(self,offset,buf):
@@ -778,7 +877,8 @@ class SqlFile(File):
 		"""The last process closes the file."""
 		with self.node.filesystem.db() as db:
 			yield self.node._save(db)
-			yield deferToThread(self.file.close)
+			if self.file:
+				yield deferToThread(self.file.close)
 			if self.node.clr_inuse():
 				yield self.node.tree._remove(self.node,db)
 		if self.writes:
@@ -787,7 +887,8 @@ class SqlFile(File):
 
 	def flush(self,flags, ctx=None):
 		"""One process closeds the file"""
-		return deferToThread(self.file.flush)
+		if self.file:
+			return deferToThread(self.file.flush)
 
 	@inlineCallbacks
 	def sync(self, flags, ctx=None):
@@ -796,11 +897,12 @@ class SqlFile(File):
 
 			flags&1: use fdatasync()
 		"""
-		if flags & 1 and hasattr(os, 'fdatasync'):
-			yield deferToThread(os.fdatasync,self.file.fileno())
-		else:
-			yield deferToThread(os.fsync,self.file.fileno())
-		yield self.node.sync(flags)
+		if self.file:
+			if flags & 1 and hasattr(os, 'fdatasync'):
+				yield deferToThread(os.fdatasync,self.file.fileno())
+			else:
+				yield deferToThread(os.fsync,self.file.fileno())
+			yield self.node.sync(flags)
 		returnValue( None )
 
 	def lock(self, cmd, owner, **kw):

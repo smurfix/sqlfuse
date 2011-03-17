@@ -352,7 +352,7 @@ def main():
 			else:
 				print("A node named '%s' already exists",file=sys.stderr)
 				sys.exit(1)
-			n = db.Do("insert into node(name,root,files,secret) values(${node},${root},${files},${secret})", node=opt.name,root=r, files=opt.files, secret=open("/dev/urandom",'r').read(int(info.secretlen)))
+			n = db.Do("insert into node(name,root,files,secret,`password`) values(${node},${root},${files},${secret},${pass})", node=opt.name,root=r, files=opt.files, secret=open("/dev/urandom",'r').read(int(info.secretlen), password=opt.access))
 			db.Do("insert into event(node,inode,typ) values(${node},${inode},'i')", inode=inum,node=n)
 			db.commit()
 		elif opt.mode2 == "updater":
@@ -421,33 +421,40 @@ def main():
 				done += 1
 		elif opt.mode2 == "node":
 			node, = db.DoFn("select id from node where name=${node}", node=opt.name)
+			if opt.access is not None:
+				if opt.access:
+					db.Do("update node set `password`=${password} where id=${node}", node=node, password=opt.access, _empty=True)
+				else:
+					db.Do("update node set `password`=NULL where id=${node}", node=node, _empty=True)
+				done += 1
 			if opt.address is not None:
 				if opt.address:
-					db.Do("update node set address=${address} where id=${node}", node=node, address=opt.address)
+					db.Do("update node set address=${address} where id=${node}", node=node, address=opt.address, _empty=True)
 				else:
-					db.Do("update node set address=NULL where id=${node}", node=node)
+					db.Do("update node set address=NULL where id=${node}", node=node, _empty=True)
 				done += 1
 			if opt.tcpport is not None:
 				if opt.tcpport:
-					db.Do("update node set port=${port} where id=${node}", node=node, port=opt.tcpport)
+					db.Do("update node set port=${port} where id=${node}", node=node, port=opt.tcpport, _empty=True)
 				else:
-					db.Do("update node set port=NULL where id=${node}", node=node)
+					db.Do("update node set port=NULL where id=${node}", node=node, _empty=True)
 				done += 1
 			if opt.newname:
-				db.Do("update node set name=${name} where id=${node}", node=node, name=opt.newname)
+				db.Do("update node set name=${name} where id=${node}", node=node, name=opt.newname, _empty=True)
 				done += 1
 			if opt.files:
-				db.Do("update node set files=${files} where id=${node}", node=node, files=opt.files)
+				db.Do("update node set files=${files} where id=${node}", node=node, files=opt.files, _empty=True)
 				done += 1
 			if opt.secret:
+				# _empty is not set, for obvious reasons
 				db.Do("update node set secret=${secret} where id=${node}", node=node, secret=open("/dev/urandom",'r').read(int(info.secretlen)))
 				done += 1
 		elif opt.mode2 == "updater":
 			if opt.distance:
-				db.Do("update updater set distance=${distance} where id=${id}", id=opt.id, distance=opt.distance)
+				db.Do("update updater set distance=${distance} where id=${id}", id=opt.id, distance=opt.distance, _empty=True)
 				done += 1
 			if opt.cache is not None:
-				db.Do("update updater set autocopy=${copy} where id=${id}", id=opt.id, copy= not opt.cache)
+				db.Do("update updater set autocopy=${copy} where id=${id}", id=opt.id, copy= not opt.cache, _empty=True)
 				done += 1
 		else:
 			raise NotImplementedError("I don't know how to do that.")

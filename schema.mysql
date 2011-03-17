@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.4.5');
+insert into info(name,value) values('version','0.4.6');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -137,6 +137,7 @@ CREATE TABLE `node` (
   `address` varchar(64) NULL, -- IP address to listen on
   `port` smallint(5) unsigned NULL default 50329, -- port to listen on
   `secret` binary(64) NOT NULL, -- secret key for authorisation of peer nodes
+  `password` varchar(64) NULL default NULL, -- secret key for authorisation of manhole monitor
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
   constraint `fk_node_root` foreign key(`root`) references `root`(`id`) on delete cascade

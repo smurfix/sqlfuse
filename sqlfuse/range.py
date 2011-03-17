@@ -9,13 +9,16 @@
 
 from __future__ import division, print_function, absolute_import
 
+from twisted.spread.flavors import Copyable
+from twisted.spread.jelly import globalSecurity
+
 __all__ = ["Range"]
 
 # This works out for small numbers. For large ones, swap them.
 T="!\"$%&/()=?{[]}+*~#'-_.:,;<>\\^`@|0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 NT="abcdefghijklmnopqrstuvwxyz"
 
-class Range(list):
+class Range(list,Copyable):
 	"""\
 	This class represents a disjunct sorted range of integers,
 	stored as (begin,end) tuples.
@@ -33,7 +36,25 @@ class Range(list):
 	def __repr__(self):
 		return "%s(%s)" % (self.__class__.__name__,list.__repr__(self))
 	def __str__(self):
-		return ",".join(((("%d-%d"%(a,b-1)) if a<b else str(a)) for a,b in self))
+		if len(self):
+			return ",".join(((("%d-%d"%(a,b-1)) if a<b-1 else str(a)) for a,b in self))
+		else:
+			return "-"
+
+	def getStateToCopy(self):
+		return self.__getstate__()
+	def getStateFor(self,j):
+		return self.__getstate__()
+	def setStateFor(self,j,s):
+		return self.__setstate__(s)
+	def __getstate__(self):
+		s = self.encode()
+		print("ENCODE",self,"to",s)
+		return s
+	def __setstate__(self,s):
+		self.decode(s)
+		print("DECODE",s,"to",self)
+		
 	def sum(self):
 		l = 0
 		for s,e in self:
@@ -147,6 +168,7 @@ class Range(list):
 
 	def add(self, start,end):
 		"""Add a start/end range to the list"""
+		if start == end: return False
 		assert end > start,"%d %d"%(start,end)
 		a=0
 		b=len(self)
@@ -172,6 +194,7 @@ class Range(list):
 
 	def delete(self, start,end):
 		"""Remove a start/end range to the list"""
+		if start == end: return
 		assert end > start,"%d %d"%(start,end)
 		a=0
 		b=len(self)
@@ -200,6 +223,8 @@ class Range(list):
 				self.pop(i)
 			if i < len(self) and self[i][0] < end:
 				self[i] = (end,self[i][1])
+
+globalSecurity.allowInstancesOf(Range)
 
 if __name__ == "__main__":
 	"""Test the module."""
