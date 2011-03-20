@@ -45,7 +45,7 @@ class Range(list,Copyable):
 				res = str(a)
 				if a < b-1:
 					res += "-"+str(b-1)
-				if c is not None:
+				if c:
 					res += ":"+str(c)
 				return res
 
@@ -187,6 +187,7 @@ class Range(list,Copyable):
 		"""Add a start/end range to the list"""
 		if start == end: return False
 		assert end > start,"%d %d"%(start,end)
+		if cause is None: cause = 0
 		a=0
 		b=len(self)
 		i=0
@@ -303,6 +304,20 @@ class Range(list,Copyable):
 			if i < len(self) and self[i][0] < end:
 				# we end within this range
 				self[i] = (end,self[i][1],self[i][2])
+
+	def filter(self, cause):
+		res = Range()
+		if cause is None: cause = 0
+		for a,b,c in self:
+			if c == cause:
+				res.append((a,b,c))
+		return res
+
+	def ifilter(self, cause):
+		if cause is None: cause = 0
+		for a,b,c in self:
+			if c == cause:
+				yield a,b
 
 globalSecurity.allowInstancesOf(Range)
 
