@@ -18,6 +18,7 @@ __all__ = ["Range"]
 T="!\"$%&/()=?{[]}+*~#'-_.:,;<>\\^`@|0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 NT="abcdefghijklmnopqrstuvwxyz"
 
+class NotGiven: pass
 class Range(list,Copyable):
 	"""\
 	This class represents a disjunct sorted range of integers,
@@ -28,16 +29,27 @@ class Range(list,Copyable):
 		if isinstance(data,basestring):
 			super(Range,self).__init__()
 			self.decode(data)
-		elif data is not None:
+		elif isinstance(data,Range):
 			super(Range,self).__init__(data)
 		else:
 			super(Range,self).__init__()
+			if data is not None:
+				for x in data:
+					self.add(*x)
 
 	def __repr__(self):
 		return "%s(%s)" % (self.__class__.__name__,list.__repr__(self))
 	def __str__(self):
 		if len(self):
-			return ",".join(((("%d-%d"%(a,b-1)) if a<b-1 else str(a)) for a,b in self))
+			def pr(a,b,c=None):
+				res = str(a)
+				if a < b-1:
+					res += "-"+str(b-1)
+				if c is not None:
+					res += ":"+str(c)
+				return res
+
+			return ",".join(pr(*x) for x in self)
 		else:
 			return "-"
 
@@ -65,8 +77,8 @@ class Range(list,Copyable):
 		res = Range(self)
 		return res.__iadd__(other)
 	def __iadd__(self,other):
-		for a,b in other:
-			self.add(a,b)
+		for a,b,c in other:
+			self.add(a,b,c)
 		return self
 
 	def __sub__(self,other):
@@ -74,7 +86,7 @@ class Range(list,Copyable):
 		res = Range(self)
 		return res.__isub__(other)
 	def __isub__(self,other):
-		for a,b in other:
+		for a,b,c in other:
 			self.delete(a,b)
 		return self
 
@@ -84,29 +96,28 @@ class Range(list,Copyable):
 		return res.__iand__(other)
 	def __iand__(self,other):
 		e = 0
-		for a,b in other:
+		for a,b,c in other:
 			if a > e: # test fails if the first range starts at zero
 				self.delete(e,a)
 			e = b
 		if e is not None:
 			while len(self):
-				self[-1]
 				if self[-1][0] >= e:
 					self.pop()
 				else:
 					if self[-1][1] > e:
-						self[-1] = (self[-1][0],e)
+						self[-1] = (self[-1][0],e,self[-1][2])
 					break
 
 		return self
 
-	def equals(self,a,b):
+	def equals(self,a,b,c=NotGiven):
 		if a == b:
 			return len(self) == 0
 
 		if len(self) != 1:
 			return False
-		if self[0][0] != a or self[0][1] != b:
+		if self[0][0] != a or self[0][1] != b or (c is not NotGiven and self[0][1] != c):
 			return False
 		return True
 
@@ -120,14 +131,14 @@ class Range(list,Copyable):
 		"""
 		res = ""
 		off=0
-		for aa in self:
-			noff=aa[1]
-			aa=(aa[0]-off,aa[1]-aa[0])
-			for a in aa:
-				while a >= len(T):
-					res += NT[a%len(NT)]
-					a //= len(NT)
-				res += T[a]
+		for a,b,c in self:
+			noff=b
+			aa=(a-off, b-a, (c if c is not None else 0))
+			for x in aa:
+				while x >= len(T):
+					res += NT[x%len(NT)]
+					x //= len(NT)
+				res += T[x]
 			off = noff
 		return res
 
@@ -137,42 +148,49 @@ class Range(list,Copyable):
 		This is the inverse of the 'encode' method.
 		"""
 		a=None
-		b=0
+		b=None
+		x=0
 		mult=1
 		off=0
 		if len(self): # since there are existing entries, go slow
 			add = self.add
 		else: # faster, since input is serial
-			def add(a,b): self.append((a,b))
+			def add(a,b,c):
+				self.append((a,b,c))
 
 		for c in s:
 			i = T.find(c)
 			if i == -1:
 				i = NT.index(c)
-				b += mult*i
+				x += mult*i
 				mult *= len(NT)
 				continue
-			b += mult*i + off
-			off = b
+			x += mult*i + off
 			if a is None:
-				a=b
+				off = x
+				a = x
+			elif b is None:
+				off = x
+				b = a+x
 			else:
-				add(a,a+b)
+				if x == 0:
+					x = None
+				add(a,b,x)
 				a=None
-			b=0
+				b=None
+			x=0
 			mult=1
 
 		assert a is None
-		assert b==0
 
-	def add(self, start,end):
+	def add(self, start,end, cause=None, replace=True):
 		"""Add a start/end range to the list"""
 		if start == end: return False
 		assert end > start,"%d %d"%(start,end)
 		a=0
 		b=len(self)
 		i=0
-		chg = True
+		chg = False
 		while a<b:
 			i=(a+b)//2
 			if self[i][1] < start:
@@ -183,12 +201,72 @@ class Range(list,Copyable):
 			else:
 				break
 		while i < len(self) and self[i][0] <= end:
-			s,e = self.pop(i)
-			if start >= s and end <= e:
-				chg = False
-			if start > s: start = s
-			if end < e: end = e
-		self.insert(i,(start,end))
+			# we may extend this range
+			a,b,c = self[i]
+			if a <= start and end <= b and (cause == c or not replace):
+				return chg
+			if cause == c:
+				# Compatible range. Simply extend.
+				if start < a:
+					chg = True
+				elif start > a:
+					start = a
+				if end > b:
+					chg = True
+				elif end < b:
+					end = b
+				self.pop(i)
+				continue
+			if replace:
+				chg = True
+			if a < start:
+				# need to keep some original data
+
+				assert start <= b # assured by binsearch, above
+				if replace:
+					self[i] = (a,start,c)
+				else:
+					if end <= b:
+						return chg # done
+					start = b
+				i += 1
+				continue
+			if start < a: # empty area before the next block
+				if end <= a:
+					break
+				if replace:
+					if b <= end: # eat the block
+						self.pop(i)
+						continue
+					# keep the block's end
+					self[i] = (end,b,c)
+					break
+				else:
+					self.insert(i,(start,a,cause))
+					i += 1
+					chg = True
+					if end > b:
+						start = b
+						continue
+					return chg
+
+			assert a==start
+			if replace:
+				if b <= end:
+					self.pop(i)
+					continue
+				self[i] = (end,b,c)
+				break
+			else:
+				if b < end:
+					start = b
+					i += 1
+					continue
+				return chg
+			i += 1
+		if start < end:
+			self.insert(i,(start,end,cause))
+			chg = True
 		return chg
 
 	def delete(self, start,end):
@@ -208,20 +286,23 @@ class Range(list,Copyable):
 			else:
 				break
 		if i < len(self):
-			if i < len(self) and start > self[i][0] and end < self[i][1]:
-				b1 = (self[i][0],start)
-				b2 = (end,self[i][1])
-				self[i] = b2
-				self.insert(i,b1)
-				return
 			if self[i][0] < start:
-				assert self[i][1] > start
-				self[i] = (self[i][0],start)
+				b1 = (self[i][0],start,self[i][2])
+				if end < self[i][1]:
+					# we're in the middle of a range, thus need to split it
+					b2 = (end,self[i][1],self[i][2])
+					self[i] = b1
+					self.insert(i+1,b2)
+					return
+				# we start within a range, but extend past its end
+				self[i] = b1
 				i += 1
 			while i < len(self) and self[i][1] <= end:
+				# we cover this range
 				self.pop(i)
 			if i < len(self) and self[i][0] < end:
-				self[i] = (end,self[i][1])
+				# we end within this range
+				self[i] = (end,self[i][1],self[i][2])
 
 globalSecurity.allowInstancesOf(Range)
 
@@ -229,59 +310,114 @@ if __name__ == "__main__":
 	"""Test the module."""
 	from random import SystemRandom
 	import sys
-	def add(chg,start,end,res=None):
-		c = a.add(start,end)
-		r = a.encode()
-		print("\tadd(%d,%d,%r)" % (start,end,r))
-		if (res is not None and res != r) or chg != c:
-			b = Range()
-			b.decode(res)
-			print("Want",chg,repr(b))
-			print("Has ",c,repr(a),repr(a.encode()))
-			print("after add",start,end)
+	def add(rep,c,chg,start,end,res=None):
+		ch = a.add(start,end,c,rep)
+		r = str(a)
+		print("\tadd(%d,%s,%d,%d,%d,%r)" % (rep, repr(c),chg,start,end,r))
+		if (res is not None and res != r) or chg != ch:
+			print("Want",chg,res)
+			print("Has ",ch,r)
 			sys.exit(1)
+
 	def rem(start,end,res=None):
-		old = repr(a)
 		a.delete(start,end)
-		r = a.encode()
-		print("\trem(%d,%d,%r)" % (start,end,r))
+		r = str(a)
+		print("\trem(%d,%d,%r)" % (start,end,str(a)))
 		if res is not None and res != r:
-			b = Range()
-			b.decode(res)
-			print("Want",repr(b))
-			print("Has ",repr(a),repr(a.encode()))
-			print("del",start,end,"from",old)
+			print("Want",res)
+			print("Has ",r)
 			sys.exit(1)
 	r=SystemRandom()
 	a = Range()
-	add(1,70,80,'s${')
-	add(1,30,40,'@{@{')
-	add(1,50,60,'@{{{{{')
-	add(1,11,19,'[=[{{{{{')
-	add(0,11,19,'[=[{{{{{')
-	add(1,10,19,'{?[{{{{{')
-	add(1,10,20,'{{{{{{{{')
-	add(0,10,19,'{{{{{{{{')
-	add(0,11,20,'{{{{{{{{')
-	add(1,90,100,'{{{{{{{{{{')
-	add(1,9,10,'?[{{{{{{{{')
-	add(1,49,51,'?[{{?[{{{{')
-	add(1,87,89,'?[{{?[{{)$"{')
-	add(1,41,43,'?[{{"$([{{)$"{')
-	add(1,20,22,'?}={"$([{{)$"{')
-	add(1,59,61,'?}={"$(]?{)$"{')
-	add(1,5,33,'/3"$(]?{)$"{')
-	add(1,75,111,'/3"$(]?9')
-	rem(20,30,'/*{{"$(]?9')
-	rem(80,90,'/*{{"$(]?{{.')
-	rem(40,60,'/*{{_"?{{.')
-	rem(2,5,'/*{{_"?{{.')
-	rem(2,6,'(+{{_"?{{.')
-	rem(111,115,'(+{{_"?{{.')
-	rem(110,115,'(+{{_"?{{_')
-	rem(19,32,'(}}=_"?{{_')
-	rem(29,31,'(}}=_"?{{_')
-	#print(repr(a))
+	add(0,None,1,70,80,'70-79')
+	add(0,None,1,30,40,'30-39,70-79')
+	add(0,None,1,50,60,'30-39,50-59,70-79')
+	add(0,None,1,11,19,'11-18,30-39,50-59,70-79')
+	add(0,None,0,11,19,'11-18,30-39,50-59,70-79')
+	add(0,None,1,10,19,'10-18,30-39,50-59,70-79')
+	add(0,None,1,10,20,'10-19,30-39,50-59,70-79')
+	add(0,None,0,10,19,'10-19,30-39,50-59,70-79')
+	add(0,None,0,11,20,'10-19,30-39,50-59,70-79')
+	add(0,None,1,90,100,'10-19,30-39,50-59,70-79,90-99')
+	add(0,None,1,9,10,'9-19,30-39,50-59,70-79,90-99')
+	add(0,None,1,49,51,'9-19,30-39,49-59,70-79,90-99')
+	add(0,None,1,87,89,'9-19,30-39,49-59,70-79,87-88,90-99')
+	add(0,None,1,41,43,'9-19,30-39,41-42,49-59,70-79,87-88,90-99')
+	add(0,None,1,20,22,'9-21,30-39,41-42,49-59,70-79,87-88,90-99')
+	add(0,None,1,59,61,'9-21,30-39,41-42,49-60,70-79,87-88,90-99')
+	add(0,None,1,5,33,'5-39,41-42,49-60,70-79,87-88,90-99')
+	add(0,None,1,75,111,'5-39,41-42,49-60,70-110')
+	add(0,None,1,60,70,'5-39,41-42,49-110')
+	rem(20,30,'5-19,30-39,41-42,49-110')
+	rem(80,90,'5-19,30-39,41-42,49-79,90-110')
+	rem(39,60,'5-19,30-38,60-79,90-110')
+	rem(2,5,'5-19,30-38,60-79,90-110')
+	rem(2,6,'6-19,30-38,60-79,90-110')
+	rem(111,115,'6-19,30-38,60-79,90-110')
+	rem(110,115,'6-19,30-38,60-79,90-109')
+	rem(18,32,'6-17,32-38,60-79,90-109')
+	rem(29,31,'6-17,32-38,60-79,90-109')
+
+	a = Range()
+	add(1,1,1,70,80,'70-79:1')
+	add(1,2,1,30,40,'30-39:2,70-79:1')
+	add(1,3,1,50,60,'30-39:2,50-59:3,70-79:1')
+	add(1,None,1,11,19,'11-18,30-39:2,50-59:3,70-79:1')
+	add(1,5,1,11,19,'11-18:5,30-39:2,50-59:3,70-79:1')
+	add(1,6,1,10,19,'10-18:6,30-39:2,50-59:3,70-79:1')
+	add(1,7,1,10,20,'10-19:7,30-39:2,50-59:3,70-79:1')
+	add(1,8,1,10,19,'10-18:8,19:7,30-39:2,50-59:3,70-79:1')
+	add(1,9,1,11,20,'10:8,11-19:9,30-39:2,50-59:3,70-79:1')
+	add(1,10,1,90,100,'10:8,11-19:9,30-39:2,50-59:3,70-79:1,90-99:10')
+	add(1,11,1,9,10,'9:11,10:8,11-19:9,30-39:2,50-59:3,70-79:1,90-99:10')
+	add(1,12,1,49,51,'9:11,10:8,11-19:9,30-39:2,49-50:12,51-59:3,70-79:1,90-99:10')
+	add(1,None,1,87,89,'9:11,10:8,11-19:9,30-39:2,49-50:12,51-59:3,70-79:1,87-88,90-99:10')
+	add(1,14,1,41,43,'9:11,10:8,11-19:9,30-39:2,41-42:14,49-50:12,51-59:3,70-79:1,87-88,90-99:10')
+	add(1,15,1,20,22,'9:11,10:8,11-19:9,20-21:15,30-39:2,41-42:14,49-50:12,51-59:3,70-79:1,87-88,90-99:10')
+	add(1,16,1,59,61,'9:11,10:8,11-19:9,20-21:15,30-39:2,41-42:14,49-50:12,51-58:3,59-60:16,70-79:1,87-88,90-99:10')
+	add(1,17,1,5,33,'5-32:17,33-39:2,41-42:14,49-50:12,51-58:3,59-60:16,70-79:1,87-88,90-99:10')
+	add(1,18,1,75,111,'5-32:17,33-39:2,41-42:14,49-50:12,51-58:3,59-60:16,70-74:1,75-110:18')
+	add(1,19,1,60,70,'5-32:17,33-39:2,41-42:14,49-50:12,51-58:3,59:16,60-69:19,70-74:1,75-110:18')
+	rem(20,30,'5-19:17,30-32:17,33-39:2,41-42:14,49-50:12,51-58:3,59:16,60-69:19,70-74:1,75-110:18')
+	rem(80,90,'5-19:17,30-32:17,33-39:2,41-42:14,49-50:12,51-58:3,59:16,60-69:19,70-74:1,75-79:18,90-110:18')
+	rem(39,60,'5-19:17,30-32:17,33-38:2,60-69:19,70-74:1,75-79:18,90-110:18')
+	rem(2,5,'5-19:17,30-32:17,33-38:2,60-69:19,70-74:1,75-79:18,90-110:18')
+	rem(2,6,'6-19:17,30-32:17,33-38:2,60-69:19,70-74:1,75-79:18,90-110:18')
+	rem(111,115,'6-19:17,30-32:17,33-38:2,60-69:19,70-74:1,75-79:18,90-110:18')
+	rem(110,115,'6-19:17,30-32:17,33-38:2,60-69:19,70-74:1,75-79:18,90-109:18')
+	rem(18,32,'6-17:17,32:17,33-38:2,60-69:19,70-74:1,75-79:18,90-109:18')
+	rem(29,31,'6-17:17,32:17,33-38:2,60-69:19,70-74:1,75-79:18,90-109:18')
+
+	a = Range()
+	add(0,1,1,70,80,'70-79:1')
+	add(0,2,1,30,40,'30-39:2,70-79:1')
+	add(0,3,1,50,60,'30-39:2,50-59:3,70-79:1')
+	add(0,None,1,11,19,'11-18,30-39:2,50-59:3,70-79:1')
+	add(0,5,0,11,19,'11-18,30-39:2,50-59:3,70-79:1')
+	add(0,6,1,10,19,'10:6,11-18,30-39:2,50-59:3,70-79:1')
+	add(0,7,1,10,20,'10:6,11-18,19:7,30-39:2,50-59:3,70-79:1')
+	add(0,8,0,10,19,'10:6,11-18,19:7,30-39:2,50-59:3,70-79:1')
+	add(0,9,0,11,20,'10:6,11-18,19:7,30-39:2,50-59:3,70-79:1')
+	add(0,10,1,90,100,'10:6,11-18,19:7,30-39:2,50-59:3,70-79:1,90-99:10')
+	add(0,11,1,9,10,'9:11,10:6,11-18,19:7,30-39:2,50-59:3,70-79:1,90-99:10')
+	add(0,12,1,49,51,'9:11,10:6,11-18,19:7,30-39:2,49:12,50-59:3,70-79:1,90-99:10')
+	add(0,None,1,87,89,'9:11,10:6,11-18,19:7,30-39:2,49:12,50-59:3,70-79:1,87-88,90-99:10')
+	add(0,14,1,41,43,'9:11,10:6,11-18,19:7,30-39:2,41-42:14,49:12,50-59:3,70-79:1,87-88,90-99:10')
+	add(0,15,1,20,22,'9:11,10:6,11-18,19:7,20-21:15,30-39:2,41-42:14,49:12,50-59:3,70-79:1,87-88,90-99:10')
+	add(0,16,1,59,61,'9:11,10:6,11-18,19:7,20-21:15,30-39:2,41-42:14,49:12,50-59:3,60:16,70-79:1,87-88,90-99:10')
+	add(0,17,1,5,33,'5-8:17,9:11,10:6,11-18,19:7,20-21:15,22-29:17,30-39:2,41-42:14,49:12,50-59:3,60:16,70-79:1,87-88,90-99:10')
+	add(0,18,1,75,111,'5-8:17,9:11,10:6,11-18,19:7,20-21:15,22-29:17,30-39:2,41-42:14,49:12,50-59:3,60:16,70-79:1,80-86:18,87-88,89:18,90-99:10,100-110:18')
+	add(0,18,1,60,70,'5-8:17,9:11,10:6,11-18,19:7,20-21:15,22-29:17,30-39:2,41-42:14,49:12,50-59:3,60:16,61-69:18,70-79:1,80-86:18,87-88,89:18,90-99:10,100-110:18')
+	rem(20,30,'5-8:17,9:11,10:6,11-18,19:7,30-39:2,41-42:14,49:12,50-59:3,60:16,61-69:18,70-79:1,80-86:18,87-88,89:18,90-99:10,100-110:18')
+	rem(80,90,'5-8:17,9:11,10:6,11-18,19:7,30-39:2,41-42:14,49:12,50-59:3,60:16,61-69:18,70-79:1,90-99:10,100-110:18')
+	rem(39,60,'5-8:17,9:11,10:6,11-18,19:7,30-38:2,60:16,61-69:18,70-79:1,90-99:10,100-110:18')
+	rem(2,5,'5-8:17,9:11,10:6,11-18,19:7,30-38:2,60:16,61-69:18,70-79:1,90-99:10,100-110:18')
+	rem(2,6,'6-8:17,9:11,10:6,11-18,19:7,30-38:2,60:16,61-69:18,70-79:1,90-99:10,100-110:18')
+	rem(111,115,'6-8:17,9:11,10:6,11-18,19:7,30-38:2,60:16,61-69:18,70-79:1,90-99:10,100-110:18')
+	rem(110,115,'6-8:17,9:11,10:6,11-18,19:7,30-38:2,60:16,61-69:18,70-79:1,90-99:10,100-109:18')
+	rem(18,32,'6-8:17,9:11,10:6,11-17,32-38:2,60:16,61-69:18,70-79:1,90-99:10,100-109:18')
+	rem(29,31,'6-8:17,9:11,10:6,11-17,32-38:2,60:16,61-69:18,70-79:1,90-99:10,100-109:18')
+
 
 	def t(a,b,op,c):
 		a=Range(a)
