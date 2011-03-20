@@ -165,13 +165,13 @@ class Range(list,Copyable):
 				x += mult*i
 				mult *= len(NT)
 				continue
-			x += mult*i + off
+			x += mult*i
 			if a is None:
-				off = x
-				a = x
+				a = x+off
+				off = a
 			elif b is None:
-				off = x
-				b = a+x
+				b = x+off
+				off = b
 			else:
 				if x == 0:
 					x = None
@@ -318,6 +318,12 @@ if __name__ == "__main__":
 			print("Want",chg,res)
 			print("Has ",ch,r)
 			sys.exit(1)
+		s = a.encode()
+		r = Range(s)
+		if str(r) != str(a):
+			print("D Want",a)
+			print("D Has ",r)
+			sys.exit(1)
 
 	def rem(start,end,res=None):
 		a.delete(start,end)
@@ -327,6 +333,13 @@ if __name__ == "__main__":
 			print("Want",res)
 			print("Has ",r)
 			sys.exit(1)
+		s = a.encode()
+		r = Range(s)
+		if str(r) != str(a):
+			print("D Want",a)
+			print("D Has ",r)
+			sys.exit(1)
+
 	r=SystemRandom()
 	a = Range()
 	add(0,None,1,70,80,'70-79')
