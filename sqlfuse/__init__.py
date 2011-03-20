@@ -15,7 +15,7 @@ __all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION')
 
 import datetime,errno,inspect,os
 
-DBVERSION = "0.4.6"
+DBVERSION = "0.5"
 
 class Info(object):
 	def _load(self,db):
@@ -29,10 +29,14 @@ try:
 except AttributeError:
 	errno.ENOATTR=61 # TODO: this is Linux
 
-def nowtuple():
+def nowtuple(offset=0):
 	"""Return the current time as (seconds-from-epoch,milliseconds) tuple."""
 	now = datetime.datetime.utcnow()
-	return (int(now.strftime("%s")),int(now.strftime("%f000")))
+	o1 = int(offset)
+	o2 = offset-o1
+	if o2:
+		o2 = int(o2*1000000000)
+	return (o1+int(now.strftime("%s")),o2+int(now.strftime("%f000")))
 
 def log_call(depth=0):
 	"""Debugging aid"""
