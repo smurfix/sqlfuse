@@ -29,7 +29,7 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
 from sqlfuse import DBVERSION
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE
-from sqlfuse.background import RootUpdater,Recorder,NodeCollector,CacheRecorder
+from sqlfuse.background import RootUpdater,Recorder,NodeCollector,CacheRecorder,UpdateCollector
 from sqlfuse.node import SqlNode,NoLink
 from sqlmix.twisted import DbPool,NoData
 
@@ -90,6 +90,7 @@ class SqlFuse(FileSystem):
 	record = DummyRecorder()
 	collector = DummyQuit()
 	changer = DummyChanger()
+	updatefinder = DummyQuit()
 	db = DummyQuit()
 	servers = []
 
@@ -316,7 +317,7 @@ class SqlFuse(FileSystem):
 			return rem.remote_exec(node,name,*a,**k)
 
 	@inlineCallbacks
-	def each_node(self,name,*a,**k):
+	def each_node(self,chk,name,*a,**k):
 		e1 = None
 		if not self.topology:
 			raise RuntimeError("No topology information available")
@@ -334,7 +335,8 @@ class SqlFuse(FileSystem):
 				if e1 is None:
 					e1 = e
 			else:
-				returnValue(res)
+				if chk and chk():
+					returnValue(res)
 		raise e1
 
 	@inlineCallbacks
@@ -376,6 +378,8 @@ class SqlFuse(FileSystem):
 		if opt.diratime: self.diratime = {'no':0,'read':1,'access':2}[opt.diratime]
 		self.rooter = RootUpdater(self)
 		yield self.rooter.start()
+		self.updatefinder = UpdateCollector(self)
+		yield self.updatefinder.start()
 		self.changer = CacheRecorder(self)
 		yield self.changer.start()
 		self.record = Recorder(self)
@@ -430,6 +434,8 @@ class SqlFuse(FileSystem):
 		# run all delayed jobs now
 		for c in reactor.getDelayedCalls():
 			c.reset(0)
+		self.updatefinder.quit()
+		self.updatefinder = None
 		self.rooter.quit()
 		self.rooter = None
 		self.record.quit()

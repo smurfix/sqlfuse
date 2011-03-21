@@ -1,3 +1,9 @@
+python-sqlfuse (0.5-1) unstable; urgency=low
+
+  * Refactorization and database fixes for sync.
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Fri, 18 Mar 2011 08:44:30 +0100
+
 python-sqlfuse (0.4.6-1) unstable; urgency=low
 
   * Add a twisted.manhole login to the PB server.

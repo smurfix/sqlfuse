@@ -173,16 +173,12 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		node = SqlInode(self.filesystem,inum)
 		with self.filesystem.db() as db:
 			yield node._load(db)
-		if node.cache:
-			avail = node.cache.available & missing
-			missing -= avail
-		else:
-			avail = missing
-			missing = ()
+		avail = node.cache.available & missing
 		if avail:
+			missing -= avail
 			h = yield node.open(os.O_RDONLY)
 			def split(av):
-				for a,b in av:
+				for a,b,c in av:
 					while b > MAX_BLOCK:
 						yield a,MAX_BLOCK
 						a += MAX_BLOCK
@@ -198,7 +194,6 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				except Exception as e:
 					break
 			h.release()
-		print("READ NODATA",missing)
 		if missing:
 			raise DataMissing(missing)
 		

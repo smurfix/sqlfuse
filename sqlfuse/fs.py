@@ -15,7 +15,7 @@ BLOCKSIZE = 4096
 
 import errno, fcntl, os, stat, sys
 from threading import Lock
-from sqlfuse.range import Range
+from time import time
 from weakref import WeakValueDictionary
 
 from twistfuse.filesystem import Inode,File,Dir
@@ -26,10 +26,20 @@ from twisted.internet.threads import deferToThread
 from twisted.spread import pb
 
 from sqlfuse import nowtuple,log_call,flag2mode
+from sqlfuse.range import Range
 from sqlmix.twisted import NoData
 
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
-inode_xattrs = inode_attrs.union(frozenset("copies target".split()))
+inode_xattrs = inode_attrs.union(frozenset("target".split()))
+
+mode_char={}
+mode_char[stat.S_IFBLK] = 'b'
+mode_char[stat.S_IFCHR] = 'c'
+mode_char[stat.S_IFDIR] = 'd'
+mode_char[stat.S_IFIFO] = 'p'
+mode_char[stat.S_IFLNK] = 'l'
+mode_char[stat.S_IFREG] = 'f'
+mode_char[stat.S_IFSOCK] = 's'
 
 class NotKnown:
 	pass
@@ -46,14 +56,34 @@ def _shut():
 	shutting_down = True
 reactor.addSystemEventTrigger('before', 'shutdown', _shut)
 
+_Cache = WeakValueDictionary()
 class Cache(object,pb.Referenceable):
-	is_new = False
 	file_closer = None
 	file = None
 
-	def __init__(self,node):
-		self.node = node
+	@property
+	def node(self):
+		return SqlInode(self.tree, self.nodeid)
+
+	nodeid = None
+	def __new__(cls,tree,node):
+		if not isinstance(node,int):
+			node = node.nodeid
+		self = _Cache.get(node,None)
+		if self is None:
+			self = object.__new__(cls)
+			_Cache[node] = self
+		return self
+
+	def __init__(self,tree,node):
+		if self.nodeid is not None:
+			return
+		if not isinstance(node,int):
+			node = node.nodeid
+		self.tree = tree
+		self.nodeid = node
 		self.q = []
+		self.known = None
 		self.available = None
 		self.in_progress = Range()
 		self.lock = Lock() # protect file read/write
@@ -66,8 +96,18 @@ class Cache(object,pb.Referenceable):
 		self._close()
 
 	@inlineCallbacks
+	def _maybe_close(self):
+		if self._last_file < time()-5:
+			self.file_closer = None
+			yield self._close()
+		else:
+			self.file_closer = reactor.callLater(10,self._maybe_close)
+
+	@inlineCallbacks
 	def _close(self):
-		self.file_closer = None
+		if self.file_closer:
+			self.file_closer.cancel()
+			self.file_closer = None
 		if self.file:
 			if shutting_down:
 				self.file.close()
@@ -83,42 +123,78 @@ class Cache(object,pb.Referenceable):
 
 	def __repr__(self):
 		if self.in_progress:
-			return "<C %d %s +%s>" % (self.node.nodeid,self.available,self.in_progress)
+			return "<C %d %s +%s>" % (self.nodeid,self.available,self.in_progress)
 		else:
-			return "<C %d %s>" % (self.node.nodeid,self.available)
+			return "<C %d %s>" % (self.nodeid,self.available)
 	__str__ = __repr__
 
 	@inlineCallbacks
 	def _load(self,db):
+		if self.known is not None:
+			return
 		try:
-			cache, = yield db.DoFn("select cached from cache where node=${node} and inode=${inum}", node=self.node.filesystem.node_id, inum=self.node.nodeid)
+			self.cache_id,cache = yield db.DoFn("select id,cached from cache where node=${node} and inode=${inum}", node=self.tree.node_id, inum=self.nodeid)
 		except NoData:
+			self.known = Range()
 			self.available = Range()
-			self.is_new = True
+			self.cache_id = None
 		else:
-			self.available = Range(cache)
+			self.known = Range(cache)
+			self.available = self.known.filter(None)
+
+	def _file_path(self):
+		"""\
+			Return the path to my backing-store file.
+			"""
+		fp = []
+		CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		inode = self.nodeid
+		ino = inode % 100
+		inode //= 100
+		while inode:
+			if inode <= len(CHARS): # first 'digit' cannot be 'zero'
+				fp.insert(0,CHARS[inode-1])
+				break
+			fp.insert(0,CHARS[inode % len(CHARS)])
+			inode //= len(CHARS)
+		p = os.path.join(self.tree.store, *fp)
+		if not os.path.exists(p):
+			os.makedirs(p, 0o700)
+		if ino < 10:
+			ino = "0"+str(ino)
+		else:
+			ino = str(ino)
+		return os.path.join(p, ino)
 
 	def _read(self,offset,length):
 		with self.lock:
-			if not self.file:
-				ipath=self.node._file_path()+"C"
-				self.file = open(ipath,"r+")
+			self._have_file()
 			self.file.seek(offset)
 			return self.file.read(length)
 
 	def _write(self,offset,data):
 		with self.lock:
-			if not self.file:
-				ipath=self.node._file_path()+"C"
-				try:
-					self.file = open(ipath,"r+")
-				except EnvironmentError as e:
-					if e.errno == errno.ENOENT:
-						self.file = open(ipath,"w+")
-					else:
-						raise
+			self._have_file()
 			self.file.seek(offset)
 			self.file.write(data)
+
+	def _trim(self,size):
+		with self.lock:
+			self._have_file()
+			self.file.truncate(size)
+
+	def _have_file(self):
+		if not self.file:
+			ipath=self._file_path()
+			try:
+				self.file = open(ipath,"r+")
+			except EnvironmentError as e:
+				if e.errno != errno.ENOENT:
+					raise
+				self.file = open(ipath,"w+")
+			if not self.file_closer:
+				self.file_closer = reactor.callLater(15,self._maybe_close)
+		self._last_file = time()
 
 	@inlineCallbacks
 	def remote_data(self, offset, data):
@@ -130,17 +206,17 @@ class Cache(object,pb.Referenceable):
 			self.file_closer = None
 		yield reactor.callInThread(self._write,offset,data)
 		yield self.has(offset,offset+len(data))
-		self.file_closer = reactor.callLater(10,reactor.callInThread,self._close)
 
 	def has(self,offset,end):
 		"""\
 			Note that a data block has arrived.
 			"""
 		self.in_progress.delete(offset,end)
+		self.known.add(offset,end)
 		chg = self.available.add(offset,end)
 
-		if chg or self.available.equals(0,self.node.size):
-			self.node.filesystem.changer.note(self.node) # save in the database
+		if chg or self.available.equals(0,self.node.size,None):
+			self.tree.changer.note(self) # save in the database
 			self._trigger_waiters()
 
 	def _trigger_waiters(self):
@@ -155,23 +231,30 @@ class Cache(object,pb.Referenceable):
 			Check if the given data record is available.
 			"""
 		r = Range([(offset,offset+length)])
-		while True:
-			missing = r - self.available
-			if not missing:
-				returnValue( True )
+		missing = r - self.available
+		while missing:
 			todo = missing - self.in_progress
 			if todo:
-				self.in_progress += missing
+				# One option: ask each node for 'their' data, then do
+				# another pass asking all of them for whatever is missing.
+				# However, it's much simpler (and causes less load overall)
+				# to just ask every node for everything, in order of proximity.
+				def chk():
+					return not (todo - self.known)
+				self.in_progress += todo
 				try:
-					yield self.node.filesystem.each_node("readfile",self.node.nodeid,self,missing)
+					yield self.node.filesystem.each_node(chk,"readfile",self.nodeid,self,todo)
 				finally:
-					self.in_progress -= missing
+					self.in_progress -= todo
 
-					returnValue( not(r - self.available) ) # flag whether data is here
 			else:
+				assert missing & self.in_progress
 				q = Deferred()
 				self.q.append(q)
 				yield q
+
+			missing = r - self.available
+		returnValue( True )
 	
 
 # Normally the system caches inode records. However, we may have external
@@ -218,11 +301,11 @@ class SqlInode(Inode):
 			res['entry_valid'] = self.filesystem.ENTRY_VALID
 		returnValue( res )
 
+	@inlineCallbacks
 	def setattr(self, **attrs):
 		size = attrs.get('size',None)
 		if size is not None:
-			with file(self._file_path(),"r+") as f:
-				f.truncate(size)
+			yield self.cache._trim(size)
 		do_mtime = False; do_ctime = False; did_mtime = False
 		for f in inode_attrs:
 			if f == "ctime": continue
@@ -308,6 +391,10 @@ class SqlInode(Inode):
 		yield res.open()
 		returnValue( (inode, res) )
 
+	@property
+	def typ(self):
+		return mode_char[stat.S_IFMT(self.mode)]
+
 	@inlineCallbacks
 	def _new_inode(self, db, name,mode,ctx=None,rdev=None,target=None):
 		"""\
@@ -322,7 +409,7 @@ class SqlInode(Inode):
 		self.mtime = nowtuple()
 		self.size += len(name)+1
 
-		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size})", root=self.filesystem.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size)
+		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size,typ) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size},${typ})", root=self.filesystem.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size,typ=mode_char[stat.S_IFMT(mode)])
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
 		db.call_committed(self.filesystem.rooter.d_inode,1)
 		
@@ -477,28 +564,7 @@ class SqlInode(Inode):
 		self.atime = nowtuple()
 
 	def _file_path(self):
-		"""\
-			Return the path to my backing-store file.
-			"""
-		fp = []
-		CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-		inode = self.nodeid
-		ino = inode % 100
-		inode //= 100
-		while inode:
-			if inode <= len(CHARS): # first 'digit' cannot be 'zero'
-				fp.insert(0,CHARS[inode-1])
-				break
-			fp.insert(0,CHARS[inode % len(CHARS)])
-			inode //= len(CHARS)
-		p = os.path.join(self.filesystem.store, *fp)
-		if not os.path.exists(p):
-			os.makedirs(p, 0o700)
-		if ino < 10:
-			ino = "0"+str(ino)
-		else:
-			ino = str(ino)
-		return os.path.join(p, ino)
+		return self.cache._file_path()
 
 
 	@inlineCallbacks
@@ -596,18 +662,6 @@ class SqlInode(Inode):
 			raise RuntimeError("two inodes have the same ID")
 		return True
 
-#	def __new__(cls, inum,tree, is_new=False):
-#		""""Return a cached copy, if possible"""
-#		if isinstance(inum,cls): return inum
-#		try:
-#			return tree.inode_cache[inum]
-#		except KeyError:
-#			inode = object.__new__(cls)
-#			tree.inode_cache[inum] = inode
-#			inode.nodeid = None
-#			return inode
-#
-	is_new = False
 	def __new__(cls,filesystem,nodeid):
 		self = _Inode.get(nodeid,None)
 		if self is None:
@@ -659,15 +713,10 @@ class SqlInode(Inode):
 		self.timestamp = nowtuple()
 
 		if self.cache is NotKnown:
-			if stat.S_ISREG(self.mode):
-				ipath=self._file_path()
-				if os.path.exists(ipath):
-					self.cache = None
-				else:
-					self.cache = Cache(self)
-					yield self.cache._load(db)
-			else:
-				self.cache = None
+			self.cache = None
+			if self.typ == 'f':
+				self.cache = Cache(self.filesystem,self)
+				yield self.cache._load(db)
 		returnValue( None )
 	
 	def __getitem__(self,key):
@@ -810,7 +859,6 @@ class SqlFile(File):
 		mode = flag2mode(self.mode)
 		ipath=self.node._file_path()
 		if self.mode & os.O_TRUNC:
-			self.node.copies = 1 # ours
 			self.node.size = 0
 			self.node.filesystem.record.new(self.node)
 		elif mode[0] == "w":

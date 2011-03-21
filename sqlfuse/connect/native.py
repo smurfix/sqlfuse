@@ -380,12 +380,10 @@ NodeServer = NodeAdapter
 NodeClient = NodeAdapter
 def _build_callout(name):
 	def _callout(self,*a,**k):
-		print("CALLOUT",name,a,k)
 		return self.proxy.callRemote(name,*a,**k)
 	return _callout
 def _build_callin(name):
 	def _callin(self,*a,**k):
-		print("CALLIN",name,a,k)
 		return getattr(self.node,"remote_"+name)(*a,**k)
 	return _callin
 for name in SqlNode.remote_names():

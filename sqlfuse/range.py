@@ -9,6 +9,7 @@
 
 from __future__ import division, print_function, absolute_import
 
+from collections import defaultdict
 from twisted.spread.flavors import Copyable
 from twisted.spread.jelly import globalSecurity
 
@@ -111,6 +112,17 @@ class Range(list,Copyable):
 
 		return self
 
+	def split(self, begin=None,end=None):
+		"""\
+			split me into cause-specific subranges
+			"""
+		d = defaultdict(range)
+		for a,b,c in self:
+			d[c].add(a,b)
+		for c,r in d.items():
+			if c == 0: c = None
+			yield c,r
+		
 	def equals(self,a,b,c=NotGiven):
 		if a == b:
 			return len(self) == 0
@@ -173,8 +185,6 @@ class Range(list,Copyable):
 				b = x+off
 				off = b
 			else:
-				if x == 0:
-					x = None
 				add(a,b,x)
 				a=None
 				b=None
@@ -182,6 +192,15 @@ class Range(list,Copyable):
 			mult=1
 
 		assert a is None
+
+	def add_range(self, r, cause=NotGiven, replace=True):
+		# Ideally, this would use a merge-style algorithm,
+		# thereby being O(n) instead of O(n*log(n)).
+		# But n is expected to be small and I am lazy.
+		for a,b,c in r:
+			if cause is not NotGiven:
+				c = cause
+			self.add(a,b,c,replace)
 
 	def add(self, start,end, cause=None, replace=True):
 		"""Add a start/end range to the list"""
@@ -304,6 +323,18 @@ class Range(list,Copyable):
 			if i < len(self) and self[i][0] < end:
 				# we end within this range
 				self[i] = (end,self[i][1],self[i][2])
+
+	def replace(self, old_cause=None,new_cause=None):
+		res = Range()
+		if old_cause is None: old_cause = 0
+		if new_cause is None: new_cause = 0
+		for a,b,c in self:
+			if c == old_cause:
+				c = 0
+			elif c == 0:
+				c = new_cause
+			res.append((a,b,c))
+		return res
 
 	def filter(self, cause):
 		res = Range()

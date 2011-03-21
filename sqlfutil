@@ -27,6 +27,15 @@ typ = {
 	"i":"init",
 	"s":"sync",
 	}
+filetyp = {
+	"s":"socket",
+	"f":"file",
+	"d":"dir",
+	"b":"block",
+	"c":"char",
+	"p":"fifo",
+	"l":"link",
+	}
 def report(seq):
 	for k in seq:
 		print(" ".join((unicode(x) for x in k)))
@@ -71,8 +80,16 @@ def node_info(db,node_id):
 		yield("progress","dest",p)
 	for ch,ta,tb,t in db.DoSelect("select count(*),min(id),max(id),typ from event where node=${node} group by typ", node=node_id, _empty=True):
 		yield ("nchanges",typ[t],ch)
-		yield ("change","first",ta)
-		yield ("change","last",tb)
+		yield ("change",typ[t],"first",ta)
+		yield ("change",typ[t],"last",tb)
+	try:
+		ch,ta,tb = db.DoFn("select count(*),min(id),max(id) from event where node=${node}", node=node_id)
+	except NoData:
+		pass
+	else:
+		yield ("nchanges","*",ch)
+		yield ("change","*","first",ta)
+		yield ("change","*","last",tb)
 
 def root_info(db,root_id):
 	yield ("root","ID",root_id)
@@ -85,15 +102,19 @@ def root_info(db,root_id):
 def inode_info(db,inum):
 	yield ("inode","ID",inum)
 	d = db.DoFn("select * from inode where id=${id}",id=inum, _dict=1)
-	for f in "uid gid mtime atime ctime size event copies seq".split():
+	for f in "uid gid mtime atime ctime size event copies seq typ".split():
 		v = d[f]
-		if f.endswith("time"):
+		if f == "typ":
+			v = filetyp[v]
+		elif f.endswith("time"):
 			v = format_time(v,d[f+"_ns"])
 		yield (f,v)
 	n, = db.DoFn("select count(*) from tree where inode=${inode}",inode=inum)
 	yield ("nlinks",n)
 	for k,v in db.DoSelect("select xattr_name.name, xattr.value from xattr,xattr_name where xattr.inode=${inode} and xattr.name=xattr_name.id", inode=inum, _empty=1):
 		yield ("attr",k,repr(v))
+	for i,c,n in db.DoSelect("select cache.id,cache.cached,node.name from cache,node where node.id=cache.node and cache.inode=${inode}", inode=inum, _empty=1):
+		yield ("cache",n,str(Range(c)))
 	
 	try:
 		def get_path(inum,prev=""):
@@ -352,8 +373,18 @@ def main():
 			else:
 				print("A node named '%s' already exists",file=sys.stderr)
 				sys.exit(1)
-			n = db.Do("insert into node(name,root,files,secret,`password`) values(${node},${root},${files},${secret},${pass})", node=opt.name,root=r, files=opt.files, secret=open("/dev/urandom",'r').read(int(info.secretlen), password=opt.access))
-			db.Do("insert into event(node,inode,typ) values(${node},${inode},'i')", inode=inum,node=n)
+			if opt.access == "-": opt.access = None
+
+			e, = DoFn("select max(id) from event")
+			# temporary ID to satisfy consistency requirements while
+			# inserting (which violates the SQL standard, but then
+			# MySQL is what it is)
+
+			n = db.Do("insert into node(name,root,files,secret,`password`,event) values(${node},${root},${files},${secret},${password},${event})", node=opt.name,root=r, files=opt.files, secret=open("/dev/urandom",'r').read(int(info.secretlen)), password=opt.access, event=e)
+			e = db.Do("insert into event(node,inode,typ) values(${node},${inode},'i')", inode=inum,node=n)
+			db.Do("update node set event=${event} where node=${node}", event=e,node=n)
+			db.Do("insert into todo(node,inode,typ) (select ${node},id,'f' from inode where root=${root} and typ = 'f')", root=r, node=n, _empty=True)
+
 			db.commit()
 		elif opt.mode2 == "updater":
 			try:
