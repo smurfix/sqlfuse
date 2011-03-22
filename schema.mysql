@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.5');
+insert into info(name,value) values('version','0.5.1');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -140,6 +140,7 @@ CREATE TABLE `node` (
   `secret` varbinary(64) NOT NULL, -- secret key for authorisation of peer nodes
   `event` bigint(20) unsigned NOT NULL, -- last that's been processed here
   `password` varchar(64) NULL default NULL, -- secret key for authorisation of manhole monitor
+  `autocopy` bool not null default true, -- if false, this is a cache-only node
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
   KEY `fk_node_event` (`event`),
@@ -181,7 +182,7 @@ CREATE TABLE `event` (
   KEY `fk_event_node` (`node`),
   KEY `fk_event_inode` (`inode`,`typ`),
   constraint `fk_event_inode` foreign key(`inode`) references `inode`(`id`) on delete restrict,
-  constraint `fk_event_node` foreign key(`node`) references `node`(`id`) on delete restrict
+  constraint `fk_event_node` foreign key(`node`) references `node`(`id`) on delete cascade
 ) DEFAULT CHARSET=binary;
 insert into info(name,value) values('rangelen','1023');
 insert into `event` (`id`,`inode`,`node`,`typ`) values (1,1,1,'i');
@@ -200,7 +201,6 @@ CREATE TABLE `updater` (
   `distance` tinyint(2) unsigned NOT NULL, -- how expensive is copying?
   `method` varchar(10) not null, -- some Python class or other
   `args` varchar(1024) not null, -- some class-specific parameters
-  `autocopy` bool not null default true, -- if false, only copy on demand
   PRIMARY KEY (`id`),
   KEY `fk_updater_dest` (`dest`),
   KEY `fk_updater_src` (`src`),

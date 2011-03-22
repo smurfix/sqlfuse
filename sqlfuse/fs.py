@@ -207,6 +207,13 @@ class Cache(object,pb.Referenceable):
 		yield reactor.callInThread(self._write,offset,data)
 		yield self.has(offset,offset+len(data))
 
+	def trim(self,end):
+		r = Range()
+		r.add(0,end)
+		self.known &= r
+		self.available &= r
+		self.tree.changer.note(self)
+
 	def has(self,offset,end):
 		"""\
 			Note that a data block has arrived.
@@ -514,11 +521,6 @@ class SqlInode(Inode):
 
 	@inlineCallbacks
 	def _remove(self,db):
-		try:
-			yield deferToThread(os.unlink,self._file_path())
-		except EnvironmentError as e:
-			if e.errno != errno.ENOENT:
-				raise
 		if self.write_timer:
 			self.write_timer.cancel()
 			self.write_timer = None
@@ -543,11 +545,18 @@ class SqlInode(Inode):
 		elif stat.S_ISREG(self.mode):
 			self.filesystem.record.delete(self)
 
-		if stat.S_ISREG(self.mode):
-			try: yield deferToThread(os.unlink,self._file_path())
-			except EnvironmentError: pass
+		yield deferToThread(self._os_unlink)
 		self.nodeid = None
 		returnValue( None )
+
+	def _os_unlink(self):
+		if self.nodeid is None: return
+		if stat.S_ISREG(self.mode):
+			try:
+				os.unlink(self._file_path())
+			except EnvironmentError as e:
+				if e.errno != errno.ENOENT:
+					raise
 
 	def __delete__(self):
 		assert self.write_timer is None
@@ -872,6 +881,7 @@ class SqlFile(File):
 
 		if self.mode & os.O_TRUNC:
 			yield deferToThread(os.ftruncate,self.file.fileno(),0)
+			self.node.cache.trim(0)
 		returnValue( None )
 
 	@inlineCallbacks

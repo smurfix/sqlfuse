@@ -63,6 +63,7 @@ class Info(object):
 def node_info(db,node_id):
 	yield ("node","ID",node_id)
 	d = db.DoFn("select * from node where id=${id}",id=node_id, _dict=1)
+	yield("cache-only", 'no' if d['autocopy'] else 'yes')
 	for f in "root name files".split():
 		yield (f,d[f])
 	yield "secret",repr(d['secret'][0:7])+u'…'
@@ -74,10 +75,8 @@ def node_info(db,node_id):
 		yield("updater","src",p)
 	for p, in db.DoSelect("select id from updater where dest=${node}", node=node_id, _empty=1):
 		yield("updater","dest",p)
-	for p, in db.DoSelect("select id from progress where src=${node}", node=node_id, _empty=1):
-		yield("progress","src",p)
-	for p, in db.DoSelect("select id from progress where dest=${node}", node=node_id, _empty=1):
-		yield("progress","dest",p)
+	for p, in db.DoSelect("select id from todo where node=${node}", node=node_id, _empty=1):
+		yield("todo",p)
 	for ch,ta,tb,t in db.DoSelect("select count(*),min(id),max(id),typ from event where node=${node} group by typ", node=node_id, _empty=True):
 		yield ("nchanges",typ[t],ch)
 		yield ("change",typ[t],"first",ta)
@@ -181,7 +180,6 @@ def updater_info(db,pnr):
 	yield("distance",d['distance'])
 	yield("method",d['method'])
 	yield("args",d['args'])
-	yield("cache-only", 'no' if d['autocopy'] else 'yes')
 	
 
 def progress_info(db,pnr):
@@ -384,6 +382,8 @@ def main():
 			e = db.Do("insert into event(node,inode,typ) values(${node},${inode},'i')", inode=inum,node=n)
 			db.Do("update node set event=${event} where node=${node}", event=e,node=n)
 			db.Do("insert into todo(node,inode,typ) (select ${node},id,'f' from inode where root=${root} and typ = 'f')", root=r, node=n, _empty=True)
+			if opt.cache is not None:
+				db.Do("update node set autocopy=${copy} where id=${node}", node=n, copy= not opt.cache)
 
 			db.commit()
 		elif opt.mode2 == "updater":
@@ -403,8 +403,6 @@ def main():
 				if opt.tcpport is not None:
 					args.append(opt.tcpport)
 			uid = db.Do("insert into updater(src,dest,distance,method,args) values(${src},${dest},${distance},${method},${args})", src=sid,dest=did,distance=opt.distance,method=opt.method,args=repr(args))
-			if opt.cache is not None:
-				db.Do("update updater set autocopy=${copy} where id=${id}", id=uid, copy= not opt.cache)
 
 		else:
 			raise NotImplementedError("I don't know how to do that.")
@@ -480,12 +478,12 @@ def main():
 				# _empty is not set, for obvious reasons
 				db.Do("update node set secret=${secret} where id=${node}", node=node, secret=open("/dev/urandom",'r').read(int(info.secretlen)))
 				done += 1
+			if opt.cache is not None:
+				db.Do("update node set autocopy=${copy} where id=${node}", node=node, copy= not opt.cache, _empty=True)
+				done += 1
 		elif opt.mode2 == "updater":
 			if opt.distance:
 				db.Do("update updater set distance=${distance} where id=${id}", id=opt.id, distance=opt.distance, _empty=True)
-				done += 1
-			if opt.cache is not None:
-				db.Do("update updater set autocopy=${copy} where id=${id}", id=opt.id, copy= not opt.cache, _empty=True)
 				done += 1
 		else:
 			raise NotImplementedError("I don't know how to do that.")

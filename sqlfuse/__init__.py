@@ -15,7 +15,7 @@ __all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION')
 
 import datetime,errno,inspect,os
 
-DBVERSION = "0.5"
+DBVERSION = "0.5.1"
 
 class Info(object):
 	def _load(self,db):

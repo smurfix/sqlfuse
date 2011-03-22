@@ -151,6 +151,9 @@ def options(mode=None,args=None):
 		Baddnode.add_argument("root", help="use this root")
 		Baddnode.add_argument("files", help="Path to storage space")
 		Baddnode.add_argument("access", help="Secret for management login")
+		Bapg = Baddnode.add_mutually_exclusive_group()
+		Bapg.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
+		Bapg.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
 
 		Baddroot = Badd.add_parser("root",help="hierarchy root")
 		Baddroot.set_defaults(mode2="root")
@@ -158,9 +161,6 @@ def options(mode=None,args=None):
 
 		Baddupdater = Badd.add_parser("updater",help="file copying method")
 		Baddupdater.set_defaults(mode2="updater")
-		Bapg = Baddupdater.add_mutually_exclusive_group()
-		Bapg.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
-		Bapg.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
 		Baddupdater.add_argument("src", help="source node")
 		Baddupdater.add_argument("dest", help="destination node")
 		Baddupdater.add_argument("distance", help="number measuring the copy's efficiency; smaller=better")
@@ -202,14 +202,14 @@ def options(mode=None,args=None):
 		Bung = Bupdatenode.add_mutually_exclusive_group()
 		Bung.add_argument("--tcpport", type=int, help="TCP port to accept SQLfuse connections on")
 		Bung.add_argument("--noport", action='store_false',dest='tcpport', help="do not accept SQLfuse connections")
+		Bupg = Bupdatenode.add_mutually_exclusive_group()
+		Bupg.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
+		Bupg.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
 
 		Bupdateupdater = Bupdate.add_parser("updater",help="file copying method")
 		Bupdateupdater.set_defaults(mode2="updater")
 		Bupdateupdater.add_argument("id", type=int, help="updater ID")
 		Bupdateupdater.add_argument("--distance", dest="distance", help="number measuring the copy's efficiency; smaller=better")
-		Bupg = Bupdateupdater.add_mutually_exclusive_group()
-		Bupg.add_argument('--copy','--nocache', action='store_false', dest="cache", help="always copy files")
-		Bupg.add_argument('--nocopy','--cache', action='store_true', dest="cache", help="copy files on demand")
 
 		Bupdateroot = Bupdate.add_parser("root",help="hierarchy root")
 		Bupdateroot.set_defaults(mode2="root")

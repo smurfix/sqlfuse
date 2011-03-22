@@ -127,17 +127,17 @@ class Recorder(BackgroundJob):
 
 	@inlineCallbacks
 	def _cleaner(self):
-		rnodes = []
 		with self.tree.db() as db:
-			yield db.DoSelect("select id from node where root=${root} and id != ${node}", root=self.tree.root_id,node=self.tree.node_id, _empty=True, _callback=rnodes.append)
-			if rnodes:
+			try:
+				all_done,n_nodes = yield db.DoFn("select min(event),count(*) from node where root=${root} and id != ${node}", root=self.tree.root_id, node=self.tree.node_id)
+			except NoData:
 				pass
-				# TODO
 			else:
-				# No nodes. Cleanup change records.
+				if not n_nodes:
+					return
 				try:
-					evt, = yield db.DoFn("select id from event where node=${node} and typ = 's' order by id desc limit 1", node=self.tree.node_id)
-					yield db.Do("delete from event where node=${node} and id < ${id}", id=evt,node=self.tree.node_id)
+					last_syn, = yield db.DoFn("select id from event where node=${node} and typ = 's' and id <= ${evt} order by id desc limit 1", node=self.tree.node_id, evt=all_done)
+					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id)
 				except NoData:
 					pass
 
@@ -298,10 +298,8 @@ class UpdateCollector(BackgroundJob):
 			@inlineCallbacks
 			def do_changed():
 				if not inode:
-					print("DC: no inode")
 					return
 				if not data:
-					print("DC: no data for",inode.nodeid)
 					return
 				inode.cache.known.add_range(data)
 				self.tree.changer.note(inode.cache)
@@ -309,45 +307,36 @@ class UpdateCollector(BackgroundJob):
 				yield db.Do("replace into todo(node,inode,typ) values(${node},${inode},'f')", inode=inode.nodeid, node=self.tree.node_id, _empty=True)
 
 			for i,inum,ityp,node,typ,r in it:
-				print("DC: checking",i,inum)
 				if ityp != 'f':
-					print("DC: skip",ityp)
 					continue
 				if not inode or inode.nodeid != inum:
-					print("DC: new node",inum)
 					yield do_changed()
 					inode = SqlInode(self.tree,inum)
-					yield inode._load(db)
+					if inode.nodeid is not None: # locally deleted
+						yield inode._load(db)
 					data = Range()
 					skip = False
 				elif skip:
-					print("DC: skipping")
 					continue
 
 				if typ == 'i' or typ == 's' or typ == 'f':
-					print("DC: not interested",typ)
 					pass
 
 				elif typ == 'c':
-					r = Range(r).replace(self.tree.node_id,node)
-					print("DC: changed",r)
+					r = Range(r)
+					if node != self.tree.node_id:
+						r = r.replace(self.tree.node_id,node)
 					data.add_range(r,replace=False)
-					print("DC: data now",data)
 
 				elif typ == 'd':
-					print("DC: delete")
-					try:
-						yield reactor.callInThread(os.unlink,fn)
-					except EnvironmentError as e:
-						if e.errno != errno.ENOENT:
-							print_exc()
-					except Exception:
-						print_exc()
+					yield reactor.callInThread(self._os_unlink)
 					skip = True
 
 				elif typ == 'n':
-					print("DC: trim",inode.size)
-					yield deferToThread(inode.cache._trim,inode.size)
+					if data: size = data[-1][1]
+					else: size=0
+					yield deferToThread(inode.cache._trim, (inode.size if inode.size > size else size))
+					inode.cache._trim(size)
 					self.tree.changer.note(inode.cache)
 					skip=True
 					
@@ -356,5 +345,4 @@ class UpdateCollector(BackgroundJob):
 
 			yield do_changed()
 			yield db.Do("update node set event=${event} where id=${node}", node=self.tree.node_id, event=seq)
-			print("DC: done")
 			

@@ -30,7 +30,7 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 from sqlfuse import DBVERSION
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE
 from sqlfuse.background import RootUpdater,Recorder,NodeCollector,CacheRecorder,UpdateCollector
-from sqlfuse.node import SqlNode,NoLink
+from sqlfuse.node import SqlNode,NoLink,MAX_BLOCK
 from sqlmix.twisted import DbPool,NoData
 
 
@@ -418,7 +418,8 @@ class SqlFuse(FileSystem):
 			FUSE callback.
 			"""
 		self.handler = handler
-		return {'flags': FUSE_ATOMIC_O_TRUNC|FUSE_ASYNC_READ|FUSE_EXPORT_SUPPORT|FUSE_BIG_WRITES}
+		return {'flags': FUSE_ATOMIC_O_TRUNC|FUSE_ASYNC_READ|FUSE_EXPORT_SUPPORT|FUSE_BIG_WRITES,
+			'max_write':MAX_BLOCK}
 
 	def destroy(self):
 		"""\
