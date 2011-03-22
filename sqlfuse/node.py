@@ -37,6 +37,8 @@ from sqlmix import NoData
 INITIAL_RETRY=1
 MAX_RETRY=60
 MAX_BLOCK=65536
+ECHO_TIMER=1
+ECHO_TIMEOUT=10
 
 class NoLink(RuntimeError):
 	"""\
@@ -60,7 +62,8 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		self.node_id = node_id
 		self.filesystem = filesystem
 		self.retry_timeout = INITIAL_RETRY
-		self.retry_timer = reactor.callLater(INITIAL_RETRY, self.connect_timer)
+		self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
+		self.echo_timer = None
 		self._connector = None
 
 		self._server = None
@@ -71,12 +74,32 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		if self._server or self._connector:
 			return
 		d = self.connect()
+		def grab_nolink(r):
+			r.trap(NoLink)
+			print("There is no way to connect to node",self.node_id)
+		d.addErrback(grab_nolink)
 		d.addErrback(log.err)
 
-	def connect(self):
-		return self._connect()
+	def connect_retry(self):
+		"""\
+			Try to connect; returns a Deferred which contains this
+			attempt's state. However, on failure also install a retry
+			timer.
+			"""
+		if self.retry_timer:
+			self.retry_timer.cancel()
+			self.retry_timer = None
+		d = self.connect()
+		def retrier(r):
+			if self.retry_timer:
+				self.retry_timer.cancel()
+				self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
+			return r
+		d.addErrback(retrier)
+		return d
+
 	@inlineCallbacks
-	def _connect(self):
+	def connect(self):
 		"""\
 			Try to connect to this node's remote side.
 			"""
@@ -116,24 +139,67 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		finally:
 			self._connector = None
 
+	def disconnect_retry(self):
+		if self._server:
+			self._server.disconnect()
+			self._server = None
+		if not self._connector and not self.retry_timer:
+			self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
+
+	def server_no_echo(self):
+		self.echo_timer = None
+		self.disconnect_retry()
+		print("Echo timeout",)
+
+	def server_echo(self):
+		self.echo_timer = reactor.callLater(ECHO_TIMEOUT,self.server_no_echo)
+
+		def get_echo(r):
+			if self.echo_timer:
+				self.echo_timer.cancel()
+			self.echo_timer = reactor.callLater(ECHO_TIMER,self.server_echo)
+
+		def get_echo_error(r):
+			if self.echo_timer:
+				self.echo_timer.cancel()
+				self.echo_timer = None
+			log.err(r)
+			self.disconnect_retry()
+
+		d = self.do_echo("ping")
+		d.addCallbacks(get_echo,get_echo_error)
+			
 
 	def server_connected(self, server):
 		if self._server is not None and self._server is not server:
 			self._server.disconnect()
+		print("Connected server to",self.node_id)
 		self._server = server
+		self.retry_timeout = INITIAL_RETRY
+
+		if self.echo_timer is not None:
+			self.echo_timer.cancel()
+		self.echo_timer = reactor.callLater(ECHO_TIMER,self.server_echo)
 
 	def server_disconnected(self, server):
 		if self._server is server:
 			self._server = None
+			if self.echo_timer is not None:
+				self.echo_timer.cancel()
+				self.echo_timer = None
+			print("Disconnected server to",self.node_id)
 			if self.node_id is not None:
-				self.retry_timer = reactor.callLater(INITIAL_RETRY, self.connect_timer)
+				self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
 
 	def client_connected(self, client):
+		print("Connected client to",self.node_id)
 		self._clients.add(client)
 
 	def client_disconnected(self, client):
 		try: self._clients.remove(client)
 		except (ValueError,KeyError): pass
+		else:
+			print("Disconnected client to",self.node_id)
 
 
 	def disconnect(self):
@@ -144,7 +210,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		r = self._server
 		if r is not None:
 			self._server = None
-			r.transport.loseConnection()
+			r.disconnect()
 
 		r = self._connector
 		if r is not None:
@@ -155,12 +221,12 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		if r:
 			self._clients = []
 			for c in r:
-				c.transport.loseConnection()
+				c.disconnect()
 
-	def remote_echo(self,msg):
+	def remote_echo(self,caller,msg):
 		return msg
 	
-	def remote_exec(self,node,name,*a,**k):
+	def remote_exec(self,caller,node,name,*a,**k):
 		if node not in self.topology:
 			raise NoLink(node)
 
@@ -210,8 +276,12 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		def make_callout(name):
 			def _callout(self, *a,**k):
 				d = self.connect()
-				d.addErrback(log.err)
 				d.addCallback(lambda r: getattr(self._server,"do_"+name)(self,*a,**k))
+				def log_me(r):
+					if not r.check(NoLink):
+						log.err(r)
+					return r
+				d.addErrback(log_me)
 				return d
 			return _callout
 			

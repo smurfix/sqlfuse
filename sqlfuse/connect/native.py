@@ -132,7 +132,7 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 			self._connector = None
 
 		if self.proxy: # connected?
-			self.proxy.transport.loseConnection()
+			self.proxy.broker.transport.loseConnection()
 			self.proxy = None
 		self.node = None
 
@@ -141,8 +141,9 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 			The connection to the remote side is gone.
 			This is called by the remote adapter.
 			"""
-		self.node.client_disconnected(self)
-		self.node.server_disconnected(self)
+		if self.node:
+			self.node.client_disconnected(self)
+			self.node.server_disconnected(self)
 
 
 ##############

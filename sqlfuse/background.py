@@ -18,11 +18,13 @@ from traceback import print_exc
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred, Deferred
 from twisted.internet.threads import deferToThread
+from twisted.python import log
 
 from sqlmix import NoData
 from sqlfuse.fs import BLOCKSIZE,SqlInode
 from sqlfuse.range import Range
 from sqlfuse.topo import next_hops
+from sqlfuse.node import NoLink
 
 class BackgroundJob(object):
 	"""\
@@ -235,10 +237,12 @@ class NodeCollector(BackgroundJob):
 		# add new nodes
 		for k in nodes:
 			if k not in self.tree.remote:
-				d = self.tree.remote[k].connect() # yes, this works, .remote auto-extends
+				d = self.tree.remote[k].connect_retry() # yes, this works, .remote auto-extends
 				def pr(r):
-					print("Could not connect to",k)
+					r.trap(NoLink)
+					print("Node",k,"found, but no way to connect")
 				d.addErrback(pr)
+				d.addErrback(log.err)
 
 				e = Deferred()
 				d.addBoth(lambda r: e.callback(None))
