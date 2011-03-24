@@ -24,6 +24,7 @@ import errno, os, stat, sys, traceback
 from traceback import print_exc
 from twistfuse.filesystem import FileSystem
 from twistfuse.kernel import FUSE_ATOMIC_O_TRUNC,FUSE_ASYNC_READ,FUSE_EXPORT_SUPPORT,FUSE_BIG_WRITES
+from twisted.application.service import MultiService
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
@@ -346,6 +347,8 @@ class SqlFuse(FileSystem):
 			"""
 		# TODO: setup a copying thread
 		self.db = db
+		reactor.addSystemEventTrigger('during', 'shutdown', db.stopService)
+
 		self.node = node
 		with self.db() as db:
 			try:
@@ -376,16 +379,15 @@ class SqlFuse(FileSystem):
 			"""
 		if opt.atime: self.atime = {'no':0,'mtime':1,'yes':2}[opt.atime]
 		if opt.diratime: self.diratime = {'no':0,'read':1,'access':2}[opt.diratime]
-		self.rooter = RootUpdater(self)
-		yield self.rooter.start()
-		self.updatefinder = UpdateCollector(self)
-		yield self.updatefinder.start()
-		self.changer = CacheRecorder(self)
-		yield self.changer.start()
-		self.record = Recorder(self)
-		yield self.record.start()
-		self.collector = NodeCollector(self)
-		yield self.collector.start()
+		self.services = MultiService()
+		for a,b in (('rooter',RootUpdater),
+			('updatefinder',UpdateCollector), ('changer',CacheRecorder),
+			('record',Recorder), ('collector', NodeCollector)):
+			b = b(self)
+			setattr(self,a,b)
+			b.setServiceParent(self.services)
+		reactor.addSystemEventTrigger('before', 'shutdown', self.services.stopService)
+		yield self.services.startService()
 		yield self.connect_all()
 	
 	@inlineCallbacks
@@ -421,6 +423,7 @@ class SqlFuse(FileSystem):
 		return {'flags': FUSE_ATOMIC_O_TRUNC|FUSE_ASYNC_READ|FUSE_EXPORT_SUPPORT|FUSE_BIG_WRITES,
 			'max_write':MAX_BLOCK}
 
+	@inlineCallbacks
 	def destroy(self):
 		"""\
 			Unmounting: tell the background job to stop.
@@ -435,16 +438,7 @@ class SqlFuse(FileSystem):
 		# run all delayed jobs now
 		for c in reactor.getDelayedCalls():
 			c.reset(0)
-		self.updatefinder.quit()
-		self.updatefinder = None
-		self.rooter.quit()
-		self.rooter = None
-		self.record.quit()
-		self.record = None
-		self.collector.quit()
-		self.collector = None
-		self.changer.quit()
-		self.changer = None
+		yield self.services.stopService()
 		reactor.iterate(delay=0.05)
 		#self.db.stop() # TODO: shutdown databases
 		#reactor.iterate(delay=0.05)

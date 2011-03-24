@@ -48,13 +48,12 @@ sqlmount /path -o option...: mount a file hierarchy from a SQL database.
 			if h is not None:
 				h.umount()
 			reactor.stop()
-			fs.destroy()
 		d.addErrback(did_error)
 	reactor.callWhenRunning(startup)
 	reactor.run()
 	if h is not None:
 		h.umount()
-	fs.destroy()
+	#fs.destroy()
 
 if __name__ == '__main__':
 	main()

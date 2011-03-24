@@ -97,7 +97,7 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 				raise NoConnection
 			self.connected(res)
 		except err.ConnectionRefusedError:
-			raise
+			raise NoConnection
 		except Exception:
 			log.err()
 			raise

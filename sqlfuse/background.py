@@ -15,6 +15,9 @@ from collections import defaultdict
 import os, sys
 from traceback import print_exc
 
+from zope.interface import implements
+
+from twisted.application.service import Service,IService
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred, Deferred
 from twisted.internet.threads import deferToThread
@@ -26,20 +29,31 @@ from sqlfuse.range import Range
 from sqlfuse.topo import next_hops
 from sqlfuse.node import NoLink
 
-class BackgroundJob(object):
+class BackgroundJob(object,Service):
 	"""\
 		Do some work in the background. Abstract class; implement .work()
 		and possibly change .interval.
 		"""
+	implements(IService)
 	interval = 1.0
 	worker = None
+	workerRunning = None
 	restart = False
 
 	def __init__(self):
-		pass
+		self.setName(self.__class__.__name__)
 
-	def start(self):
-		pass
+	def startService(self):
+		super(BackgroundJob,self).startService()
+		if self.restart:
+			self.run()
+
+	def stopService(self):
+		super(BackgroundJob,self).stopService()
+		if self.worker:
+			self.worker.cancel()
+			self.worker = None
+		return self.workerRunning
 
 	def trigger(self):
 		"""Tell the worker to do something. Sometime later."""
@@ -57,14 +71,15 @@ class BackgroundJob(object):
 		"""Background loop."""
 
 		self.restart = False
-		d = maybeDeferred(self.work)
+		self.workerRunning = maybeDeferred(self.work)
 		def done(r):
 			self.worker = None
-			if self.restart:
+			if self.restart and not self.running:
 				self.trigger()
+			self.workerRunning = None
 			return r
-		d.addBoth(done)
-		d.addErrback(lambda e: e.printTraceback(file=sys.stderr))
+		self.workerRunning.addErrback(lambda e: e.printTraceback(file=sys.stderr))
+		self.workerRunning.addBoth(done)
 
 	def work(self):
 		raise NotImplementedError("You need to override %s.work" % (self.__class__.__name__))
