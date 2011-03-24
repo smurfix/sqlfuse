@@ -17,7 +17,7 @@ Right now, only native interconnection is supported.
 
 """
 
-__all__ = ('SqlNode','NoLink','DataMissing')
+__all__ = ('SqlNode','NoLink','DataMissing','NoConnection')
 
 import os
 from traceback import print_exc
@@ -40,11 +40,18 @@ MAX_BLOCK=65536
 ECHO_TIMER=1
 ECHO_TIMEOUT=10
 
+class NoConnection(RuntimeError):
+	"""\
+		There's no connection to a remote node.
+		"""
+	pass
+
 class NoLink(RuntimeError):
 	"""\
 		There's no record for connecting to a remote node.
 		"""
 	pass
+
 class DataMissing(BufferError):
 	"""\
 		A read callback didn't get all the data, because the local cache

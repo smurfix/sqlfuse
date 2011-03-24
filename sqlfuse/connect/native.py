@@ -27,7 +27,7 @@ from twisted.python.hashlib import md5
 from twisted.spread import pb
 
 from sqlfuse.connect import INodeClient,INodeServer,INodeServerFactory
-from sqlfuse.node import SqlNode
+from sqlfuse.node import SqlNode,NoConnection
 
 class InvalidResponse(error.UnauthorizedLogin):
 	"""You didn't provide the correct response to the challenge."""
@@ -93,6 +93,8 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 			self._connector = reactor.connectTCP(adr,port, factory)
 			res = yield factory.login(NodeCredentials(fs.db, fs.node_id,self.node.node_id))
 			self._connector = None
+			if not res:
+				raise NoConnection
 			self.connected(res)
 		except err.ConnectionRefusedError:
 			raise
