@@ -526,7 +526,7 @@ class SqlInode(Inode):
 			self.write_timer = None
 
 		entries = []
-		def app(parent,size):
+		def app(parent,name):
 			entries.append((parent,name))
 		yield db.DoSelect("select parent,name from tree where inode=${inode}", inode=self.nodeid, _empty=True, _callback=app)
 		for p in entries:
@@ -1021,17 +1021,18 @@ class SqlDir(Dir):
 		db = tree.db
 		with tree.db() as db:
 			if not offset:
-				callback(".",self.node.nodeid,self.node.mode,0)
+				callback(".",self.node.nodeid,self.node.mode,1)
+			if offset <= 1:
 				if self.node.nodeid == self.node.filesystem.inum:
-					callback("..",self.node.nodeid,self.node.mode,0)
+					callback("..",self.node.nodeid,self.node.mode,2)
 				else:
 					try:
-						inum = yield db.DoFn("select '..',inode.id,inode.mode,0 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
+						inum = yield db.DoFn("select '..',inode.id,inode.mode,2 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
 					except NoData:
 						pass
 					else:
 						callback(*inum)
-			yield db.DoSelect("select tree.name,inode.id,inode.mode,inode.id from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset, _empty=True,_store=True, _callback=callback)
+			yield db.DoSelect("select tree.name,inode.id,inode.mode,inode.id+2 from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset-2, _empty=True,_store=True, _callback=callback)
 		returnValue( None )
 
 	@inlineCallbacks
