@@ -32,6 +32,7 @@ I don't need safe concurrent write accesses, but it should be
 possible to arrange for that.
 
 Local file caches should be possible but not required.
+Updates to local caches should be possible (and auto-fetched).
 
 I like to store file metadata in a database instead of modifying
 the original files. That's important for stuff like MP3 tracks.
@@ -40,13 +41,19 @@ the original files. That's important for stuff like MP3 tracks.
 Structure
 ---------
 
-All file metadata are stored in the database.
+All file metadata are stored in a database.
+(Right now, "the" database; implementing a per-node DB is TODO.)
 You find your basic inodes there, as well as a directory tree.
 
 Within a database, you may have multiple "root" directories.
 Each of these needs at least one storage node, which specifies
 where the actual file contents are stored. You may run at most
 one sqlmount process per node. Nodes may use shared file storage.
+
+Nodes may be offline, they're resynced as soon as possible.
+Conflicts are resolved as soon as the node reconnects or,
+if it is online, after a few seconds.
+There is no guarantee that the latest update wins.
 
 If you have more than one node per root, you should also
 specify copy methods. These allow new files to be transferred
@@ -59,6 +66,9 @@ Usage
 
 	sqlmount --help
 	sqlfutil --help
+
+The mounter is written so that you can name it "/sbin/mount.sqlfuse"
+and add an entry of type 'sqlfuse' to /etc/fstab.
 
 ----
 Bugs
