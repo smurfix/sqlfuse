@@ -9,7 +9,7 @@
 
 from __future__ import division, print_function, absolute_import
 
-__all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector")
+__all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker")
 
 from collections import defaultdict
 import os, sys
@@ -19,7 +19,7 @@ from zope.interface import implements
 
 from twisted.application.service import Service,IService
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred, Deferred
+from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred, Deferred, DeferredList
 from twisted.internet.threads import deferToThread
 from twisted.python import log
 
@@ -302,7 +302,7 @@ class UpdateCollector(BackgroundJob):
 		self.restart = True
 		with self.tree.db() as db:
 			seq, = yield db.DoFn("select max(event.id) from event,node where typ='s' and node.root=${root} and node.id=event.node", root=self.tree.root_id)
-			last, = yield db.DoFn("select event from node where id=${node}", node=self.tree.node_id)
+			last,do_copy = yield db.DoFn("select event,autocopy from node where id=${node}", node=self.tree.node_id)
 			if seq == last:
 				return
 			it = yield db.DoSelect("select event.id,event.inode,inode.typ,event.node,event.typ,event.range from event,node,inode where inode.id=event.inode and inode.typ='f' and event.id>${min} and event.id<=${max} and node.id=event.node and node.root=${root} order by event.inode,event.id desc", root=self.tree.root_id, min=last,max=seq, _empty=True)
@@ -319,7 +319,9 @@ class UpdateCollector(BackgroundJob):
 				inode.cache.known.add_range(data)
 				self.tree.changer.note(inode.cache)
 				# TODO only do this if we don't just cache
-				yield db.Do("replace into todo(node,inode,typ) values(${node},${inode},'f')", inode=inode.nodeid, node=self.tree.node_id, _empty=True)
+				if do_copy:
+					yield db.Do("replace into todo(node,inode,typ) values(${node},${inode},'f')", inode=inode.nodeid, node=self.tree.node_id, _empty=True)
+					self.tree.copier.trigger()
 
 			for i,inum,ityp,node,typ,r in it:
 				if ityp != 'f':
@@ -361,3 +363,61 @@ class UpdateCollector(BackgroundJob):
 			yield do_changed()
 			yield db.Do("update node set event=${event} where id=${node}", node=self.tree.node_id, event=seq)
 			
+	
+class CopyWorker(BackgroundJob):
+	"""\
+		Periodically read the TODO list and fetch the files mentioned there.
+		"""
+	def __init__(self,tree):
+		super(CopyWorker,self).__init__()
+		self.tree = tree
+		self.trigger()
+		self.interval = 10 # TODO: production value should be lower
+		self.nfiles = 10
+		self.last_entry = None
+		self.workers = set()
+	
+	@inlineCallbacks
+	def fetch(self,id,inode):
+		self.workers.add(id)
+		try:
+			if inode.cache is not None:
+				yield inode.cache.get_data(0,inode.size)
+		except Exception as e:
+			print_exc()
+		else:
+			with self.tree.db() as db:
+				yield db.Do("delete from todo where id=${id}", id=id)
+		finally:
+			self.workers.remove(id)
+
+	@inlineCallbacks
+	def work(self):
+		with self.tree.db() as db:
+			f=""
+			if self.last_entry:
+				f = " and id > ${last}"
+
+			entries = []
+			def app(*a):
+				entries.append(a)
+			yield db.DoSelect("select id,inode,typ from todo where node=${node}"+f+" order by id limit ${nfiles}", node=self.tree.node_id,nfiles=self.nfiles,last=self.last_entry,_empty=True,_callback=app)
+			if not entries:
+				self.last_entry = None
+				return
+			self.restart = True
+
+			defs = []
+			for id,inum,typ in entries:
+				if inum in self.workers:
+					pass
+				self.last_entry = id
+
+				inode = SqlInode(self.tree,inum)
+				if typ != 'f': # TODO: what about deletions?
+					continue
+				yield inode._load(db)
+				defs.append(self.fetch(id,inode))
+		yield DeferredList(defs)
+
+		
