@@ -87,7 +87,21 @@ can thus keep the original file, and still access the individual parts.
 TODO
 ----
 
-Indexing by content (file SHA1). This means copy-on-write.
+Index files by content (file SHA1), store identical files only once.
+This means copy-on-write, probably intelligently (i.e. copy only parts).
+
+If we can copy parts, creating snapshots becomes possible.
+
+Add files to the storage without going through the file system.
 
 Protect against SQL server restarts and timeouts.
+
+Implement file locking. This requires some sort of broadcast feature.
+
+Implement a ssh file-copying backend, probably with a channel for the PB
+connection.
+
+Implement node-specific database storage (sqlite; directly push inode
+updates when connected; remember to push inode updates to other nodes;
+re-sync data when nodes connect).
 
