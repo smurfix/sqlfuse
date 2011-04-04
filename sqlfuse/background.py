@@ -161,6 +161,8 @@ class Recorder(BackgroundJob):
 					return
 				try:
 					last_syn, = yield db.DoFn("select id from event where node=${node} and typ = 's' and id <= ${evt} order by id desc limit 1", node=self.tree.node_id, evt=all_done)
+					# remove old inode entries
+					yield db.Do("delete inode from event,inode where event.node=${node} and event.typ = 'd' and inode.id=event.inode and event.id < ${id}", id=last_syn, node=self.tree.node_id)
 					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id)
 				except NoData:
 					pass
