@@ -44,11 +44,13 @@ class BackgroundJob(object,Service):
 		self.setName(self.__class__.__name__)
 
 	def startService(self):
+		"""Startup. Part of IService."""
 		super(BackgroundJob,self).startService()
 		if self.restart:
 			self.run()
 
 	def stopService(self):
+		"""Shutdown. Part of IService."""
 		super(BackgroundJob,self).stopService()
 		if self.worker:
 			self.worker.cancel()
@@ -63,6 +65,7 @@ class BackgroundJob(object,Service):
 			self.restart = True
 
 	def quit(self):
+		"""Trigger the worker now (for the last time)."""
 		if self.worker is None:
 			return
 		self.worker.reset(0)
@@ -82,10 +85,12 @@ class BackgroundJob(object,Service):
 		self.workerRunning.addBoth(done)
 
 	def work(self):
+		"""Override this."""
 		raise NotImplementedError("You need to override %s.work" % (self.__class__.__name__))
 
 
 class RootUpdater(BackgroundJob):
+	"""I update my root statistics (number of inodes and blocks) periodically, if necessary"""
 	def __init__(self,tree):
 		super(RootUpdater,self).__init__()
 		self.tree = tree
@@ -94,14 +99,17 @@ class RootUpdater(BackgroundJob):
 		self.delta_block = 0
 
 	def d_inode(self,delta):
+		"""The number of my inodes changed."""
 		self.delta_inode += delta
 		self.trigger()
 
 	def d_dir(self,delta):
+		"""The number of directory inodes changed."""
 		self.delta_dir += delta
 		self.trigger()
 
 	def d_size(self,old,new):
+		"""A file size changed."""
 		old = (old+BLOCKSIZE-1)//BLOCKSIZE
 		new = (new+BLOCKSIZE-1)//BLOCKSIZE
 		if old == new: return
@@ -122,8 +130,9 @@ class RootUpdater(BackgroundJob):
 
 class Recorder(BackgroundJob):
 	"""\
-		I record inode changes so that another node can see what I did, and
-		fetch my changes.
+		I record inode changes so that another node can see what I did.
+		
+		The other node will read these records and update their state.
 		"""
 	def __init__(self,tree):
 		super(Recorder,self).__init__()
@@ -164,6 +173,7 @@ class Recorder(BackgroundJob):
 
 	@inlineCallbacks
 	def work(self):
+		"""Write change records, or a SYN if there were no new changes."""
 		d = self.data
 		self.data = []
 		with self.tree.db() as db:
@@ -176,25 +186,29 @@ class Recorder(BackgroundJob):
 		returnValue( None )
 		
 	def delete(self,inode):
+		"""Record inode deletion"""
 		self.data.append(('d',inode.nodeid,None))
 		self.trigger()
 	
 	def new(self,inode):
+		"""Record inode creation"""
 		self.data.append(('n',inode.nodeid,None))
 		self.trigger()
 
 	def change(self,inode,data):
+		"""Record changed data"""
 		self.data.append(('c',inode.nodeid,data))
 		self.trigger()
 
 	def finish_write(self,inode):
+		"""Record finished changing data, i.e. close-file"""
 		self.data.append(('f',inode.nodeid,None))
 		self.trigger()
 
 
 class CacheRecorder(BackgroundJob):
 	"""\
-		I record an inode's caching state.
+		I record an inode's local caching state.
 		"""
 	def __init__(self,tree):
 		super(CacheRecorder,self).__init__()
@@ -213,6 +227,7 @@ class CacheRecorder(BackgroundJob):
 					yield db.Do("update cache set cached=${data} where id=${cache}", cache=n.cache_id, data=n.known.encode(), _empty=True)
 
 	def note(self,node):
+		"""Record that this inode's cache state needs to be written."""
 		assert not isinstance(node,SqlInode)
 		self.caches.add(node)
 		self.trigger()
@@ -220,8 +235,8 @@ class CacheRecorder(BackgroundJob):
 
 class NodeCollector(BackgroundJob):
 	"""\
-		Periodically try to make the internal list of remote nodes mirror
-		the facts in the database.
+		Periodically read the list of external nodes from the database
+		and update my local state.
 		"""
 	def __init__(self,tree):
 		super(NodeCollector,self).__init__()
@@ -281,8 +296,8 @@ class NodeCollector(BackgroundJob):
 
 class UpdateCollector(BackgroundJob):
 	"""\
-		Periodically read the list of changes and update the list of
-		updates that need to be processed.
+		Periodically read the list of changes, and update the list of
+		file updates that need to be processed.
 
 		For each file node, this code looks at each change (recent changes
 		first) and builds a list of remote and local changes. Processing
