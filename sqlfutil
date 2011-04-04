@@ -218,13 +218,18 @@ def main():
 		#report(inode_info(db,inum))
 	elif opt.mode == "list":
 		if opt.mode2 == "node":
-			if opt.name: # single node
+			if opt.name or opt.id: # single node
 				try:
-					id,=db.DoFn("select id from node where name=${name}",name=opt.name)
+					try:
+						nid = int(opt.name)
+					except ValueError:
+						nid,=db.DoFn("select id from node where name=${name}",name=opt.name)
+					else:
+						nid,=db.DoFn("select id from node where id=${id}",id=nid)
 				except NoData:
-					raise # TODO reasonable error message
+					print("There is no node named '%s'"%(opt.name,), file=sys.stderr)
 				else:
-					report(node_info(db,id))
+					report(node_info(db,nid))
 			else: # list
 				if opt.root:
 					try:
@@ -295,7 +300,16 @@ def main():
 					print("No progress nodes found.", file=sys.stderr)
 		elif opt.mode2 == "root":
 			if opt.name:
-				root_id,=db.DoFn("select id from root where name=${name}",name=opt.name)
+				try:
+					try:
+						root_id = int(opt.name)
+					except ValueError:
+						root_id,=db.DoFn("select id from root where name=${name}",name=opt.name)
+					else:
+						root_id,=db.DoFn("select id from root where id=${id}",id=root_id)
+				except NoData:
+					print("There is no root named '%s'"%(opt.name,), file=sys.stderr)
+					sys.exit(1)
 				report(root_info(db,root_id))
 			else:
 				for rid,name in db.DoSelect("select id,name from root order by name"):

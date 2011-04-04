@@ -221,7 +221,7 @@ def options(mode=None,args=None):
 
 		Blistnode = Blist.add_parser("node",help="directory access point")
 		Blistnode.set_defaults(mode2="node")
-		Blistnode.add_argument("name",nargs='?', help="Node name (default: list all nodes)")
+		Blistnode.add_argument("name",nargs='?', help="Node name/ID (default: list all nodes)")
 		Blistnode.add_argument("--root", dest="root", help="limit to this root (default: list all roots' nodes)")
 
 		Blistprogress = Blist.add_parser("progress",help="file copy in progress")
@@ -240,7 +240,7 @@ def options(mode=None,args=None):
 
 		Blistroot = Blist.add_parser("root",help="hierarchy root")
 		Blistroot.set_defaults(mode2="root")
-		Blistroot.add_argument("name",nargs='?', help="Root name (default: list all roots)")
+		Blistroot.add_argument("name",nargs='?', help="Root name/ID (default: list all roots)")
 
 		Blistinode = Blist.add_parser("inode",help="one file")
 		Blistinode.set_defaults(mode2="inode")
