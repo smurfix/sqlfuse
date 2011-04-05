@@ -247,6 +247,10 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		node = SqlInode(self.filesystem,inum)
 		with self.filesystem.db() as db:
 			yield node._load(db)
+		if not inode.nodeid:
+			print("Inode probably deleted",inum)
+			raise DataMissing(missing)
+
 		avail = node.cache.available & missing
 		if avail:
 			missing -= avail

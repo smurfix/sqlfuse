@@ -38,10 +38,14 @@ class BackgroundJob(object,Service):
 	interval = 1.0
 	worker = None
 	workerRunning = None
-	restart = False
+	restart = False # if True, start after initializing
 
-	def __init__(self):
+	def __init__(self,tree):
+		self.tree = tree
 		self.setName(self.__class__.__name__)
+		self.interval += 5*tree.slow
+		if self.restart:
+			self.trigger()
 
 	def startService(self):
 		"""Startup. Part of IService."""
@@ -94,12 +98,10 @@ class BackgroundJob(object,Service):
 class RootUpdater(BackgroundJob):
 	"""I update my root statistics (number of inodes and blocks) periodically, if necessary"""
 	def __init__(self,tree):
-		super(RootUpdater,self).__init__()
-		self.tree = tree
+		super(RootUpdater,self).__init__(tree)
 		self.delta_inode = 0
 		self.delta_dir = 0
 		self.delta_block = 0
-		self.interval += 5*tree.slow
 
 	def d_inode(self,delta):
 		"""The number of my inodes changed."""
@@ -136,11 +138,11 @@ class InodeCleaner(BackgroundJob):
 		I delete inodes which have been deleted by my node
 		when they're not used any more, i.e. all other nodes have caught up.
 		"""
+	interval = 30
+	restart = True
 	def __init__(self,tree):
-		super(InodeCleaner,self).__init__()
-		self.tree = tree
-		self.interval = 30 + 60*tree.slow
-		self.trigger()
+		super(InodeCleaner,self).__init__(tree)
+		self.interval += 60*tree.slow
 
 	@inlineCallbacks
 	def work(self):
@@ -174,10 +176,8 @@ class Recorder(BackgroundJob):
 		The other node will read these records and update their state.
 		"""
 	def __init__(self,tree):
-		super(Recorder,self).__init__()
-		self.tree = tree
+		super(Recorder,self).__init__(tree)
 		self.data = []
-		self.interval += 5*tree.slow
 
 	@inlineCallbacks
 	def work(self):
@@ -219,10 +219,8 @@ class CacheRecorder(BackgroundJob):
 		I record an inode's local caching state.
 		"""
 	def __init__(self,tree):
-		super(CacheRecorder,self).__init__()
-		self.tree = tree
+		super(CacheRecorder,self).__init__(tree)
 		self.caches = set()
-		self.interval += 5*tree.slow
 
 	@inlineCallbacks
 	def work(self):
@@ -247,11 +245,11 @@ class NodeCollector(BackgroundJob):
 		Periodically read the list of external nodes from the database
 		and update my local state.
 		"""
+	interval = 60
+	restart = True
 	def __init__(self,tree):
-		super(NodeCollector,self).__init__()
-		self.tree = tree
-		self.trigger()
-		self.interval = 60 + 30*tree.slow
+		super(NodeCollector,self).__init__(tree)
+		self.interval += 90*tree.slow
 	
 	@inlineCallbacks
 	def work(self):
@@ -314,11 +312,8 @@ class UpdateCollector(BackgroundJob):
 
 		Then, the changes are recorded in the 'processed' and 'cache' tables.
 		"""
-	def __init__(self,tree):
-		super(UpdateCollector,self).__init__()
-		self.tree = tree
-		self.trigger()
-		self.interval = 2 + 5*tree.slow
+	interval = 2
+	restart = True
 	
 	@inlineCallbacks
 	def work(self):
@@ -397,11 +392,10 @@ class CopyWorker(BackgroundJob):
 
 		This gets triggered by the UpdateCollector.
 		"""
+	interval = 0.1
+	restart = True
 	def __init__(self,tree):
-		super(CopyWorker,self).__init__()
-		self.tree = tree
-		self.trigger()
-		self.interval = 0.1 + 3*tree.slow
+		super(CopyWorker,self).__init__(tree)
 		self.nfiles = 100
 		self.nworkers = 3
 		self.last_entry = None

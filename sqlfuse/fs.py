@@ -698,7 +698,8 @@ class SqlInode(Inode):
 	def _load(self, db):
 		"""Load attributes from storage"""
 		if not self.nodeid:
-			raise RuntimeError("tried to load inode without ID")
+			# probably deleted
+			return
 
 		if self.seq:
 			yield self._save(db)
