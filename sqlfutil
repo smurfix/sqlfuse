@@ -71,24 +71,30 @@ def node_info(db,node_id):
 		if d['address']:
 			yield("address",d['address'])
 		yield("tcpport",d['port'])
-	for p, in db.DoSelect("select id from updater where src=${node}", node=node_id, _empty=1):
-		yield("updater","src",p)
-	for p, in db.DoSelect("select id from updater where dest=${node}", node=node_id, _empty=1):
-		yield("updater","dest",p)
+	for p,i,n in db.DoSelect("select updater.id,node.id,node.name from updater,node where updater.src=${node} and updater.dest=node.id", node=node_id, _empty=1):
+		yield("updater","src",p,u"→",i,n)
+	for p,i,n in db.DoSelect("select updater.id,node.id,node.name from updater,node where updater.dest=${node} and updater.src = node.id", node=node_id, _empty=1):
+		yield("updater","dest",p,u"←",i,n)
 	for p, in db.DoSelect("select id from todo where node=${node}", node=node_id, _empty=1):
 		yield("todo",p)
 	for ch,ta,tb,t in db.DoSelect("select count(*),min(id),max(id),typ from event where node=${node} group by typ", node=node_id, _empty=True):
-		yield ("nchanges",typ[t],ch)
-		yield ("change",typ[t],"first",ta)
-		yield ("change",typ[t],"last",tb)
+		if ta != tb:
+			yield ("change",typ[t],"first",ta)
+			yield ("change",typ[t],"last",tb)
+			yield ("nchanges",typ[t],ch)
+		else:
+			yield ("change",typ[t],"at",ta)
 	try:
 		ch,ta,tb = db.DoFn("select count(*),min(id),max(id) from event where node=${node}", node=node_id)
 	except NoData:
 		pass
 	else:
-		yield ("nchanges","*",ch)
-		yield ("change","*","first",ta)
-		yield ("change","*","last",tb)
+		if ta != tb:
+			yield ("change","*","first",ta)
+			yield ("change","*","last",tb)
+			yield ("nchanges","*",ch)
+		else:
+			yield ("change","*","at",ta)
 
 def root_info(db,root_id):
 	yield ("root","ID",root_id)
