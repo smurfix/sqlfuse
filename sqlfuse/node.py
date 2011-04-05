@@ -233,8 +233,9 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	def remote_echo(self,caller,msg):
 		return msg
 	
-	def remote_exec(self,caller,node,name,*a,**k):
-		if node not in self.topology:
+	def remote_exec(self,caller,name,node,*a,**k):
+		if node not in self.filesystem.topology:
+			print("NoLink remote",caller,node,name,repr(a),repr(k))
 			raise NoLink(node)
 
 		# TODO: cache calls to stuff like reading from a file
@@ -268,6 +269,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 					break
 			h.release()
 		if missing:
+			print("Missing: %s for %s / %s" % (missing,caller,reader))
 			raise DataMissing(missing)
 		
 	

@@ -13,13 +13,13 @@ __all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateColle
 
 from collections import defaultdict
 import os, sys
-from traceback import print_exc
+from traceback import print_exc,format_exc
 
 from zope.interface import implements
 
 from twisted.application.service import Service,IService
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred, Deferred, DeferredList
+from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred, Deferred, DeferredList, DeferredQueue
 from twisted.internet.threads import deferToThread
 from twisted.python import log
 
@@ -73,11 +73,13 @@ class BackgroundJob(object,Service):
 	def run(self):
 		"""Background loop."""
 
+		#print("Start worker",self.name)
 		self.restart = False
 		self.workerRunning = maybeDeferred(self.work)
 		def done(r):
+			#print("Stop worker",self.name)
 			self.worker = None
-			if self.restart and not self.running:
+			if self.restart and self.running:
 				self.trigger()
 			self.workerRunning = None
 			return r
@@ -97,6 +99,7 @@ class RootUpdater(BackgroundJob):
 		self.delta_inode = 0
 		self.delta_dir = 0
 		self.delta_block = 0
+		self.interval += 5*tree.slow
 
 	def d_inode(self,delta):
 		"""The number of my inodes changed."""
@@ -139,6 +142,7 @@ class Recorder(BackgroundJob):
 		self.tree = tree
 		self.data = []
 		self.cleanup = reactor.callLater(10,self.cleaner)
+		self.interval += 5*tree.slow
 
 	def cleaner(self):
 		self.cleanup = None
@@ -162,8 +166,11 @@ class Recorder(BackgroundJob):
 				try:
 					last_syn, = yield db.DoFn("select id from event where node=${node} and typ = 's' and id <= ${evt} order by id desc limit 1", node=self.tree.node_id, evt=all_done)
 					# remove old inode entries
-					yield db.Do("delete inode from event,inode where event.node=${node} and event.typ = 'd' and inode.id=event.inode and event.id < ${id}", id=last_syn, node=self.tree.node_id)
+					inums = []
+					yield db.DoSelect("select inode from event where node=${node} and typ = 'd' and id < ${id}", id=last_syn, node=self.tree.node_id, callback=inums.append, _empty=True)
 					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id)
+					if inums:
+						yield db.Do("delete from inode where id in (%s)" % ",".join((str(x) for x in inums)))
 				except NoData:
 					pass
 
@@ -216,6 +223,7 @@ class CacheRecorder(BackgroundJob):
 		super(CacheRecorder,self).__init__()
 		self.tree = tree
 		self.caches = set()
+		self.interval += 5*tree.slow
 
 	@inlineCallbacks
 	def work(self):
@@ -244,7 +252,7 @@ class NodeCollector(BackgroundJob):
 		super(NodeCollector,self).__init__()
 		self.tree = tree
 		self.trigger()
-		self.interval = 60
+		self.interval = 60 + 30*tree.slow
 	
 	@inlineCallbacks
 	def work(self):
@@ -311,7 +319,7 @@ class UpdateCollector(BackgroundJob):
 		super(UpdateCollector,self).__init__()
 		self.tree = tree
 		self.trigger()
-		self.interval = 10 # TODO: production value should be lower
+		self.interval = 2 + 5*tree.slow
 	
 	@inlineCallbacks
 	def work(self):
@@ -363,7 +371,7 @@ class UpdateCollector(BackgroundJob):
 					data.add_range(r,replace=False)
 
 				elif typ == 'd':
-					yield reactor.callInThread(self._os_unlink)
+					yield reactor.callInThread(inode._os_unlink)
 					skip = True
 
 				elif typ == 'n':
@@ -384,33 +392,45 @@ class UpdateCollector(BackgroundJob):
 class CopyWorker(BackgroundJob):
 	"""\
 		Periodically read the TODO list and fetch the files mentioned there.
+
+		This gets triggered by the UpdateCollector.
 		"""
 	def __init__(self,tree):
 		super(CopyWorker,self).__init__()
 		self.tree = tree
 		self.trigger()
-		self.interval = 10 # TODO: production value should be lower
-		self.nfiles = 10
+		self.interval = 0.1 + 3*tree.slow
+		self.nfiles = 100
+		self.nworkers = 3
 		self.last_entry = None
-		self.workers = set()
+		self.workers = set() # inode numbers
 	
 	@inlineCallbacks
-	def fetch(self,id,inode):
-		self.workers.add(id)
-		try:
-			if inode.cache is not None:
-				yield inode.cache.get_data(0,inode.size)
-		except Exception as e:
-			print_exc()
-		else:
-			with self.tree.db() as db:
-				yield db.Do("delete from todo where id=${id}", id=id)
-		finally:
-			self.workers.remove(id)
+	def fetch(self):
+		with self.tree.db() as db:
+			while True:
+				i = yield self._queue.get()
+				if not i:
+					return
+				id,inode = i
+
+				try:
+					if inode.cache is not None:
+						yield inode.cache.get_data(0,inode.size)
+				except Exception as e:
+					reason = format_exc()
+					yield db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason)
+				else:
+					yield db.Do("delete from todo where id=${id}", id=id)
+					yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
 
 	@inlineCallbacks
 	def work(self):
+		"""\
+			Fetch missing file( part)s.
+			"""
 		with self.tree.db() as db:
+			workers = set()
 			f=""
 			if self.last_entry:
 				f = " and id > ${last}"
@@ -422,19 +442,29 @@ class CopyWorker(BackgroundJob):
 			if not entries:
 				self.last_entry = None
 				return
-			self.restart = True
 
+			self.restart = True
+			self._queue = DeferredQueue()
 			defs = []
+			for i in range(self.nworkers):
+				defs.append(self.fetch())
+
 			for id,inum,typ in entries:
-				if inum in self.workers:
+				if inum in workers:
 					pass
+				workers.add(inum)
+
 				self.last_entry = id
 
 				inode = SqlInode(self.tree,inum)
 				if typ != 'f': # TODO: what about deletions?
 					continue
 				yield inode._load(db)
-				defs.append(self.fetch(id,inode))
-		yield DeferredList(defs)
+				self._queue.put((id,inode))
+
+			for i in range(self.nworkers):
+				self._queue.put(None)
+			yield DeferredList(defs)
+			self._queue = None
 
 		

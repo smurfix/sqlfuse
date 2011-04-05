@@ -122,6 +122,7 @@ def options(mode=None,args=None):
 		help="file atime options")
 	opt("diratime", dest="diratime", choices=('no','read','access'), default=None,
 		help="directory atime options")
+	opt("slow", dest="slow", action='store_true', help="delay more in background processing")
 
 	if mode == "mode":
 		A = p.add_subparsers(title='subcommands', help='main command modes')

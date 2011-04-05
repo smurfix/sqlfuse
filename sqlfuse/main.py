@@ -102,6 +102,7 @@ class SqlFuse(FileSystem):
 
 	# 0: no atime: 1: when reading; 2: also when traversing
 	diratime = 0
+	slow = False
 
 	shutting_down = False
 
@@ -312,6 +313,7 @@ class SqlFuse(FileSystem):
 			node = self.topology[dest]
 			rem = self.remote[node]
 		except KeyError:
+			print("NoLink!",dest,name,repr(a),repr(k))
 			raise NoLink(dest)
 
 		if dest == node:
@@ -325,7 +327,9 @@ class SqlFuse(FileSystem):
 		if not self.topology:
 			raise RuntimeError("No topology information available")
 		#for dest in self.topology.keys():
+		print("Call Each",name,repr(a),repr(k))
 		for dest in self.neighbors:
+			print("try",dest)
 			try:
 				d = self.call_node(dest,name,*a,**k)
 				def pr(r):
@@ -334,12 +338,16 @@ class SqlFuse(FileSystem):
 				d.addErrback(pr)
 				res = yield d
 			except Exception as e:
-				print_exc()
+				print("... oops,",repr(e))
+				#print_exc()
 				if e1 is None:
 					e1 = e
 			else:
 				if chk and chk():
+					print("OK",res)
 					returnValue(res)
+				print("OK?",res)
+		print("...over",e1)
 		raise e1
 
 	@inlineCallbacks
@@ -381,6 +389,7 @@ class SqlFuse(FileSystem):
 			"""
 		if opt.atime: self.atime = {'no':0,'mtime':1,'yes':2}[opt.atime]
 		if opt.diratime: self.diratime = {'no':0,'read':1,'access':2}[opt.diratime]
+		if opt.slow: self.slow = True
 		self.services = MultiService()
 		for a,b in (('rooter',RootUpdater),
 				('updatefinder',UpdateCollector), ('changer',CacheRecorder),
@@ -392,6 +401,7 @@ class SqlFuse(FileSystem):
 		reactor.addSystemEventTrigger('before', 'shutdown', self.services.stopService)
 		yield self.services.startService()
 		yield self.connect_all()
+		self.record.trigger()
 	
 	@inlineCallbacks
 	def connect_all(self):

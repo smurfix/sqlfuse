@@ -12,6 +12,10 @@ from __future__ import division, print_function, absolute_import
 
 BLOCKSIZE = 4096
 
+#if __debug__:
+#	import threading
+#	threading._VERBOSE = True
+
 from twisted.internet import reactor
 from twisted.spread import pb
 

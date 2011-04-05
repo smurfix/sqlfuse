@@ -209,7 +209,7 @@ CREATE TABLE `updater` (
 ) DEFAULT CHARSET=utf8;
 
 -- 
--- record initial sync, as we may need to restart
+-- file copies that are still open
 -- 
 DROP TABLE IF EXISTS `todo`;
 CREATE TABLE `todo` (
@@ -222,6 +222,24 @@ CREATE TABLE `todo` (
   UNIQUE KEY `fk_todo_nodei` (`node`,`inode`),
   constraint `fk_todo_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade,
   constraint `fk_todo_node` foreign key(`node`) references `node`(`id`) on delete cascade
+) DEFAULT CHARSET=utf8;
+ 
+
+-- 
+-- file copies which failed for some reason
+-- TODO: retry
+DROP TABLE IF EXISTS `fail`;
+CREATE TABLE `fail` (
+  `id` bigint(20) unsigned NOT NULL auto_increment,
+  `node` int(10) unsigned NOT NULL, -- my ID
+  `inode` bigint(20) unsigned NOT NULL, -- the data I'm copying
+  `typ` char character set ascii, -- 'f'ilesync, 'd'elete
+  `reason` varchar(250),
+  PRIMARY KEY (`id`),
+  KEY `fk_fail_inode` (`inode`),
+  UNIQUE KEY `fk_todo_nodei` (`node`,`inode`),
+  constraint `fk_fail_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade,
+  constraint `fk_fail_node` foreign key(`node`) references `node`(`id`) on delete cascade
 ) DEFAULT CHARSET=utf8;
  
 
