@@ -9,7 +9,7 @@
 
 from __future__ import division, print_function, absolute_import
 
-__all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker")
+__all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker","InodeCleaner")
 
 from collections import defaultdict
 import os, sys
@@ -131,30 +131,20 @@ class RootUpdater(BackgroundJob):
 		returnValue( None )
 
 
-class Recorder(BackgroundJob):
+class InodeCleaner(BackgroundJob):
 	"""\
-		I record inode changes so that another node can see what I did.
-		
-		The other node will read these records and update their state.
+		I delete inodes which have been deleted by my node
+		when they're not used any more, i.e. all other nodes have caught up.
 		"""
 	def __init__(self,tree):
-		super(Recorder,self).__init__()
+		super(InodeCleaner,self).__init__()
 		self.tree = tree
-		self.data = []
-		self.cleanup = reactor.callLater(10,self.cleaner)
-		self.interval += 5*tree.slow
-
-	def cleaner(self):
-		self.cleanup = None
-		d = self._cleaner()
-		def done(r):
-			self.cleanup = reactor.callLater(10,self.cleaner)
-			return r
-		d.addBoth(done)
-		d.addErrback(lambda r: r.printTraceback(file=sys.stderr))
+		self.interval = 30 + 60*tree.slow
+		self.trigger()
 
 	@inlineCallbacks
-	def _cleaner(self):
+	def work(self):
+		self.restart = True
 		with self.tree.db() as db:
 			try:
 				all_done,n_nodes = yield db.DoFn("select min(event),count(*) from node where root=${root} and id != ${node}", root=self.tree.root_id, node=self.tree.node_id)
@@ -165,20 +155,29 @@ class Recorder(BackgroundJob):
 					return
 				try:
 					last_syn, = yield db.DoFn("select id from event where node=${node} and typ = 's' and id <= ${evt} order by id desc limit 1", node=self.tree.node_id, evt=all_done)
-					# remove old inode entries
-					inums = []
-					yield db.DoSelect("select inode from event where node=${node} and typ = 'd' and id < ${id}", id=last_syn, node=self.tree.node_id, callback=inums.append, _empty=True)
-					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id)
-					if inums:
-						yield db.Do("delete from inode where id in (%s)" % ",".join((str(x) for x in inums)))
 				except NoData:
 					pass
+				else:
+					# remove old inode entries
+					inums = []
 
-	def quit(self):
-		if self.cleanup:
-			self.cleanup.cancel()
-			self.cleanup = None
-		super(Recorder,self).quit()
+					yield db.DoSelect("select inode from event where node=${node} and typ = 'd' and id < ${id}", id=last_syn, node=self.tree.node_id, _callback=inums.append, _empty=True)
+					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id, _empty=True)
+					if inums:
+						yield db.Do("delete from inode where id in (%s)" % ",".join((str(x) for x in inums)))
+
+
+class Recorder(BackgroundJob):
+	"""\
+		I record inode changes so that another node can see what I did.
+		
+		The other node will read these records and update their state.
+		"""
+	def __init__(self,tree):
+		super(Recorder,self).__init__()
+		self.tree = tree
+		self.data = []
+		self.interval += 5*tree.slow
 
 	@inlineCallbacks
 	def work(self):
@@ -387,6 +386,9 @@ class UpdateCollector(BackgroundJob):
 
 			yield do_changed()
 			yield db.Do("update node set event=${event} where id=${node}", node=self.tree.node_id, event=seq)
+#			if self.tree.node_id == 3:
+#				import sqlmix.twisted as t
+#				t.breaker = True
 			
 	
 class CopyWorker(BackgroundJob):
@@ -419,7 +421,10 @@ class CopyWorker(BackgroundJob):
 						yield inode.cache.get_data(0,inode.size)
 				except Exception as e:
 					reason = format_exc()
-					yield db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason)
+					try:
+						yield db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason)
+					except Exception as e:
+						log.err(reason)
 				else:
 					yield db.Do("delete from todo where id=${id}", id=id)
 					yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
