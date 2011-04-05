@@ -224,7 +224,7 @@ def main():
 		#report(inode_info(db,inum))
 	elif opt.mode == "list":
 		if opt.mode2 == "node":
-			if opt.name or opt.id: # single node
+			if opt.name: # single node
 				try:
 					try:
 						nid = int(opt.name)
