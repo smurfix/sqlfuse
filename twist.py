@@ -203,3 +203,14 @@ def cleanFailure(self):
 #	_tig(self,g)
 #failure.Failure.throwExceptionIntoGenerator = tig
 	
+def _tig(self, g):
+        """
+        This is a clone of #failure.Failure.throwExceptionIntoGenerator()
+		except that strings as exception, which may happen with remote calls,
+        are converted to a RuntimeError.
+        """
+        if isinstance(self.value,str):
+            self.type = RuntimeError
+            self.value = RuntimeError(self.value)
+        return g.throw(self.type, self.value, self.tb)
+failure.Failure.throwExceptionIntoGenerator = _tig

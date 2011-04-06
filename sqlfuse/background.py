@@ -380,7 +380,7 @@ class UpdateCollector(BackgroundJob):
 					raise ValueError("event record %d: unknown type %s" % (i,repr(typ)))
 
 			yield do_changed()
-			yield db.Do("update node set event=${event} where id=${node}", node=self.tree.node_id, event=seq)
+			yield db.Do("update node set event=${event} where id=${node}", node=self.tree.node_id, event=seq, _empty=True)
 #			if self.tree.node_id == 3:
 #				import sqlmix.twisted as t
 #				t.breaker = True
