@@ -881,17 +881,20 @@ class SqlFile(File):
 	def open(self, ctx=None):
 		mode = flag2mode(self.mode)
 		ipath=self.node._file_path()
+		retry = False
 		if self.mode & os.O_TRUNC:
 			self.node.size = 0
 			self.node.filesystem.record.new(self.node)
 		elif mode[0] == "w":
+			retry = True
 			mode = "r+"
 
 		try:
 			self.file = yield deferToThread(open,ipath,mode)
 		except EnvironmentError as e:
-			if e.errno != errno.ENOENT:
+			if e.errno != errno.ENOENT or not retry:
 				raise
+			self.file = yield deferToThread(open,ipath,"w+")
 
 		if self.mode & os.O_TRUNC:
 			yield deferToThread(os.ftruncate,self.file.fileno(),0)
