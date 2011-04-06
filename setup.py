@@ -25,5 +25,6 @@ setup (name = "sqlfuse",
        license = 'Python',
        platforms = ['POSIX'],
        packages = ['sqlfuse','sqlfuse.connect'],
+       py_modules = ['twist'],
 	   scripts = ['sqlmount', 'sqlfutil'],
       )
