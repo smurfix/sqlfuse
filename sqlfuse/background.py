@@ -324,7 +324,7 @@ class UpdateCollector(BackgroundJob):
 			last,do_copy = yield db.DoFn("select event,autocopy from node where id=${node}", node=self.tree.node_id)
 			if seq == last:
 				return
-			it = yield db.DoSelect("select event.id,event.inode,inode.typ,event.node,event.typ,event.range from event,node,inode where inode.id=event.inode and inode.typ='f' and event.id>${min} and event.id<=${max} and node.id=event.node and node.root=${root} order by event.inode,event.id desc", root=self.tree.root_id, min=last,max=seq, _empty=True)
+			it = yield db.DoSelect("select event.id,event.inode,inode.typ,event.node,event.typ,event.range from event,node,inode where inode.id=event.inode and inode.typ='f' and event.id>${min} and event.id<=${max} and node.id=event.node and node.id != ${node} and node.root=${root} order by event.inode,event.id desc", root=self.tree.root_id, node=self.tree.node_id, min=last,max=seq, _empty=True)
 
 			inode = None
 			skip = False
