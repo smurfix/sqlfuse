@@ -1,8 +1,9 @@
 python-sqlfuse (0.5.1-2) maverick; urgency=low
 
   * add twist.py to setup
+  * install documentation
 
- -- Matthias Urlichs <smurf@smurf.noris.de>  Wed, 06 Apr 2011 16:58:29 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Wed, 06 Apr 2011 17:00:26 +0200
 
 python-sqlfuse (0.5.1-1) unstable; urgency=low
 
