@@ -8,7 +8,7 @@ Standards-Version: 3.7.2
 
 Package: python-sqlfuse
 Architecture: all
-Depends: ${python:Depends}, python (>= 2.6), python-twisted-core (>= 10.1), python-sqlmix (>> 0.9.4), fuse-utils (>> 2.8), python-twistfuse (>> 0.1.3), python-argparse
+Depends: ${python:Depends}, python (>= 2.6), python-twisted-core (>= 10.1), python-sqlmix (>> 0.9.4), fuse-utils (>> 2.8), python-twistfuse (>> 0.1.3), python-argparse, python-passfd
 Provides: ${python:Provides}
 XB-Python-Version: ${python:Versions}
 Description: A replicated FUSE filesystem which stores metadata in SQL
