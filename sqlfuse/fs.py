@@ -292,7 +292,11 @@ class SqlInode(Inode):
 	def getattr(self):
 		with self.filesystem.db() as db:
 			res = {'ino':self.nodeid if self.nodeid != self.filesystem.inum else 1}
-			res['nlink'], = yield db.DoFn("select count(*) from tree where inode=${inode}",inode=self.nodeid)
+			if stat.S_ISDIR(self.mode): 
+				res['nlink'], = yield db.DoFn("select count(*) from tree,inode where tree.parent=${inode} and tree.inode=inode.id and inode.typ='d'",inode=self.nodeid)
+				res['nlink'] += 2 ## . and ..
+			else:
+				res['nlink'], = yield db.DoFn("select count(*) from tree where inode=${inode}",inode=self.nodeid)
 			for k in inode_attrs:
 				res[k] = self[k]
 # TODO count subdirectories
