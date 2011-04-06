@@ -1026,18 +1026,18 @@ class SqlDir(Dir):
 		db = tree.db
 		with tree.db() as db:
 			if not offset:
-				callback(".",self.node.nodeid,self.node.mode,1)
+				callback(".",self.node.mode,self.node.nodeid,1)
 			if offset <= 1:
 				if self.node.nodeid == self.node.filesystem.inum:
-					callback("..",self.node.nodeid,self.node.mode,2)
+					callback("..",self.node.mode,self.node.nodeid,2)
 				else:
 					try:
-						inum = yield db.DoFn("select '..',inode.id,inode.mode,2 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
+						inum = yield db.DoFn("select '..', inode.mode, inode.id, 2 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
 					except NoData:
 						pass
 					else:
 						callback(*inum)
-			yield db.DoSelect("select tree.name,inode.id,inode.mode,inode.id+2 from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset-2, _empty=True,_store=True, _callback=callback)
+			yield db.DoSelect("select tree.name, inode.mode, inode.id, inode.id+2 from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset-2, _empty=True,_store=True, _callback=callback)
 		returnValue( None )
 
 	@inlineCallbacks

@@ -1,8 +1,9 @@
 python-sqlfuse (0.5.3-1) unstable; urgency=low
 
-  * Count directory links. *Sigh*; "rm -r" doesn't work without that.
+  * Count directory links.
+  * Fix passing the inode and mode to readdir. Arguments were backwards. Ouch.
 
- -- Matthias Urlichs <smurf@smurf.noris.de>  Wed, 06 Apr 2011 19:13:30 +0200
+ -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Wed, 06 Apr 2011 19:39:12 +0200
 
 python-sqlfuse (0.5.2-1) unstable; urgency=low
 
