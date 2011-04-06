@@ -1,4 +1,10 @@
-python-sqlfuse (0.5.1-2) maverick; urgency=low
+python-sqlfuse (0.5.1-3) unstable; urgency=low
+
+  * depend on python-argparse.
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Wed, 06 Apr 2011 17:04:47 +0200
+
+python-sqlfuse (0.5.1-2) unstable; urgency=low
 
   * add twist.py to setup
   * install documentation
