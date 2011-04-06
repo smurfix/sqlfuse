@@ -234,7 +234,7 @@ CREATE TABLE `fail` (
   `node` int(10) unsigned NOT NULL, -- my ID
   `inode` bigint(20) unsigned NOT NULL, -- the data I'm copying
   `typ` char character set ascii, -- 'f'ilesync, 'd'elete
-  `reason` varchar(250),
+  `reason` text,
   PRIMARY KEY (`id`),
   KEY `fk_fail_inode` (`inode`),
   UNIQUE KEY `fk_todo_nodei` (`node`,`inode`),
