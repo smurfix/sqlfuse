@@ -33,13 +33,22 @@ inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
 inode_xattrs = inode_attrs.union(frozenset("target".split()))
 
 mode_char={}
-mode_char[stat.S_IFBLK] = 'b'
-mode_char[stat.S_IFCHR] = 'c'
-mode_char[stat.S_IFDIR] = 'd'
-mode_char[stat.S_IFIFO] = 'p'
-mode_char[stat.S_IFLNK] = 'l'
-mode_char[stat.S_IFREG] = 'f'
+mode_char[stat.S_IFBLK]  = 'b'
+mode_char[stat.S_IFCHR]  = 'c'
+mode_char[stat.S_IFDIR]  = 'd'
+mode_char[stat.S_IFIFO]  = 'p'
+mode_char[stat.S_IFLNK]  = 'l'
+mode_char[stat.S_IFREG]  = 'f'
 mode_char[stat.S_IFSOCK] = 's'
+
+mode_type={}
+mode_type[stat.S_IFBLK]  =  6 # DT_BLK
+mode_type[stat.S_IFCHR]  =  2 # DT_CHR
+mode_type[stat.S_IFDIR]  =  4 # DT_DIR
+mode_type[stat.S_IFIFO]  =  1 # DT_FIFO
+mode_type[stat.S_IFLNK]  = 10 # DT_LNK
+mode_type[stat.S_IFREG]  =  8 # DT_REG
+mode_type[stat.S_IFSOCK] = 12 # DT_SOCK
 
 class NotKnown:
 	pass
@@ -1024,20 +1033,25 @@ class SqlDir(Dir):
 		tree = self.node.filesystem
 		self.node.do_atime(is_dir=1)
 		db = tree.db
+
+		def _callback(a,b,c,d):
+			# need to mangle the type field
+			callback(a,mode_type[stat.S_IFMT(b)],c,d)
+
 		with tree.db() as db:
 			if not offset:
-				callback(".",self.node.mode,self.node.nodeid,1)
+				_callback(".",self.node.mode,self.node.nodeid,1)
 			if offset <= 1:
 				if self.node.nodeid == self.node.filesystem.inum:
-					callback("..",self.node.mode,self.node.nodeid,2)
+					_callback("..",self.node.mode,self.node.nodeid,2)
 				else:
 					try:
 						inum = yield db.DoFn("select '..', inode.mode, inode.id, 2 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
 					except NoData:
 						pass
 					else:
-						callback(*inum)
-			yield db.DoSelect("select tree.name, inode.mode, inode.id, inode.id+2 from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset-2, _empty=True,_store=True, _callback=callback)
+						_callback(*inum)
+			yield db.DoSelect("select tree.name, inode.mode, inode.id, inode.id+2 from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset-2, _empty=True,_store=True, _callback=_callback)
 		returnValue( None )
 
 	@inlineCallbacks
