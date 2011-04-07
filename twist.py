@@ -24,6 +24,7 @@ from twisted.internet import fdesc,defer,reactor,base
 from twisted.internet.abstract import FileDescriptor
 from twisted.python import failure
 from twisted.python.threadable import isInIOThread
+from twisted.spread import pb
 
 from posix import write
 import sys
@@ -214,3 +215,11 @@ def _tig(self, g):
             self.value = RuntimeError(self.value)
         return g.throw(self.type, self.value, self.tb)
 failure.Failure.throwExceptionIntoGenerator = _tig
+
+## don't report failures as errors. They _are_ reported at the other end
+def _bsf(self, fail, requestID):
+	"""Log error and then send it."""
+	log.msg("Peer will receive following PB traceback:")
+	log.msg(fail)
+	self._sendError(fail, requestID)
+pb.Broker._sendFailure = _bsf
