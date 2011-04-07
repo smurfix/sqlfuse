@@ -340,6 +340,9 @@ class UpdateCollector(BackgroundJob):
 					return
 				if not data:
 					return
+				if inode.cache.known is None:
+					#print("INODE NOCACHE1",inode)
+					return
 				inode.cache.known.add_range(data)
 				self.tree.changer.note(inode.cache)
 				# TODO only do this if we don't just cache
@@ -355,6 +358,8 @@ class UpdateCollector(BackgroundJob):
 						data = None
 						continue
 					yield inode._load(db)
+					#if inode.cache.known is None:
+					#	print("INODE NOCACHE2",inode)
 					data = Range()
 					skip = False
 				elif skip:
@@ -407,25 +412,26 @@ class CopyWorker(BackgroundJob):
 	
 	@inlineCallbacks
 	def fetch(self):
-		with self.tree.db() as db:
-			while True:
-				i = yield self._queue.get()
-				if not i:
-					return
-				id,inode = i
+		while True:
+			i = yield self._queue.get()
+			if not i:
+				return
+			id,inode = i
 
+			try:
+				if inode.cache is not None:
+					yield inode.cache.get_data(0,inode.size)
+			except Exception as e:
+				reason = format_exc()
 				try:
-					if inode.cache is not None:
-						yield inode.cache.get_data(0,inode.size)
-				except Exception as e:
-					reason = format_exc()
-					try:
+					with self.tree.db() as db:
 						yield db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason)
-					except Exception as e:
-						log.err(reason)
+				except Exception as e:
+					log.err(reason)
 				else:
-					yield db.Do("delete from todo where id=${id}", id=id)
-					yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
+					with self.tree.db() as db:
+						yield db.Do("delete from todo where id=${id}", id=id)
+						yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
 
 	@inlineCallbacks
 	def work(self):
@@ -446,28 +452,29 @@ class CopyWorker(BackgroundJob):
 				self.last_entry = None
 				return
 
-			self.restart = True
-			self._queue = DeferredQueue()
-			defs = []
-			for i in range(self.nworkers):
-				defs.append(self.fetch())
+		self.restart = True
+		self._queue = DeferredQueue()
+		defs = []
+		for i in range(self.nworkers):
+			defs.append(self.fetch())
 
-			for id,inum,typ in entries:
-				if inum in workers:
-					pass
-				workers.add(inum)
+		for id,inum,typ in entries:
+			if inum in workers:
+				pass
+			workers.add(inum)
 
-				self.last_entry = id
+			self.last_entry = id
 
-				inode = SqlInode(self.tree,inum)
-				if typ != 'f': # TODO: what about deletions?
-					continue
+			inode = SqlInode(self.tree,inum)
+			if typ != 'f': # TODO: what about deletions?
+				continue
+			with self.tree.db() as db:
 				yield inode._load(db)
-				self._queue.put((id,inode))
+			self._queue.put((id,inode))
 
-			for i in range(self.nworkers):
-				self._queue.put(None)
-			yield DeferredList(defs)
-			self._queue = None
+		for i in range(self.nworkers):
+			self._queue.put(None)
+		yield DeferredList(defs)
+		self._queue = None
 
 		

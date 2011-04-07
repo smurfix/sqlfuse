@@ -1,3 +1,10 @@
+python-sqlfuse (0.5.7-1) unstable; urgency=low
+
+  * Reordered a couple of background DB accesses
+    to prevent long-term connections, i.e. deadlock.
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Thu, 07 Apr 2011 17:54:08 +0200
+
 python-sqlfuse (0.5.6-1) unstable; urgency=low
 
   * incoming chmod() didn't preserve the inode type.
