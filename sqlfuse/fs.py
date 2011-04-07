@@ -653,9 +653,16 @@ class SqlInode(Inode):
 			return "<SInode>"
 		if not self.seq:
 			return "<SInode %d>" % (self.nodeid)
+		cache = self.cache
+		if not cache:
+			cache = "-C"
+		elif cache.known is None:
+			cache = "??"
+		else:
+			cache = str(cache.known)
 		if not self.updated:
-			return "<SInode %d:%d>" % (self.nodeid, self.seq)
-		return "<SInode %d:%d (%s)>" % (self.nodeid, self.seq, " ".join(sorted(self.updated)))
+			return "<SInode %d:%d %s>" % (self.nodeid, self.seq, cache)
+		return "<SInode %d:%d (%s) %s>" % (self.nodeid, self.seq, " ".join(sorted(self.updated)), cache)
 	__str__=__repr__
 
 	def __hash__(self):
