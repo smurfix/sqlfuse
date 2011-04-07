@@ -166,7 +166,7 @@ class InodeCleaner(BackgroundJob):
 					yield db.DoSelect("select inode from event where node=${node} and typ = 'd' and id < ${id}", id=last_syn, node=self.tree.node_id, _callback=inums.append, _empty=True)
 					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id, _empty=True)
 					if inums:
-						yield db.Do("delete from inode where id in (%s)" % ",".join((str(x) for x in inums)))
+						yield db.Do("delete from inode where id in (%s)" % ",".join((str(x) for x in inums)), _empty=True)
 
 
 class Recorder(BackgroundJob):
@@ -336,7 +336,7 @@ class UpdateCollector(BackgroundJob):
 
 			@inlineCallbacks
 			def do_changed():
-				if not inode:
+				if not inode or not inode.nodeid:
 					return
 				if not data:
 					return
