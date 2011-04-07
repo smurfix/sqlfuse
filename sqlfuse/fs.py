@@ -331,7 +331,10 @@ class SqlInode(Inode):
 			if f == "ctime": continue
 			v = attrs.get(f,None)
 			if v is not None:
-				self[f] = v
+				if f == "mode":
+					self[f] = stat.S_IFMT(self[f]) | stat.S_IMODE(v)
+				else:
+					self[f] = v
 				if f == "size":
 					do_mtime = True
 				else:

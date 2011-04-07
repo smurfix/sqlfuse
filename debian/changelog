@@ -1,3 +1,9 @@
+python-sqlfuse (0.5.6-1) unstable; urgency=low
+
+  * incoming chmod() didn't preserve the inode type.
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Thu, 07 Apr 2011 16:48:02 +0200
+
 python-sqlfuse (0.5.5-1) unstable; urgency=low
 
   * Cleanup log processing.
