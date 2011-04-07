@@ -549,13 +549,12 @@ class SqlInode(Inode):
 			p.mtime = nowtuple()
 			p.size -= len(name)+1
 		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
-		nnodes, = yield db.DoFn("select count(*) from node where root=${root}", root=self.filesystem.root_id)
-		if nnodes == 1:
+		if self.filesystem.single_node or not stat.S_ISREG(self.mode):
 			yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
 			yield db.call_committed(self.filesystem.rooter.d_inode,-1)
 			if stat.S_ISREG(self.mode):
 				yield db.call_committed(self.filesystem.rooter.d_size,self.size,0)
-		elif stat.S_ISREG(self.mode):
+		else:
 			self.filesystem.record.delete(self)
 
 		yield deferToThread(self._os_unlink)

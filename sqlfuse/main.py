@@ -366,12 +366,16 @@ class SqlFuse(FileSystem):
 				self.node_id,self.root_id,self.inum,self.store,self.port = yield db.DoFn("select node.id,root.id,root.inode,node.files,node.port from node,root where root.id=node.root and node.name=${name}", name=node)
 			except NoData:
 				raise RuntimeError("data for '%s' is missing"%(self.node,))
+
+			nnodes, = yield db.DoFn("select count(*) from node where root=${root} and id != ${node}", root=self.root_id, node=self.node_id)
+			self.single_node = not nnodes
+
 			try:
 				mode, = yield db.DoFn("select mode from inode where id=${inode}",inode=self.inum)
 			except NoData:
 				raise RuntimeError("database has not been initialized: inode %d is missing" % (self.inode,))
 			if mode == 0:
-				db.Do("update inode set mode=${dir} where id=${inode}", dir=stat.S_IFDIR|stat.S_IRWXU|stat.S_IRWXG|stat.S_IRWXO, inode=self.inum)
+				yield db.Do("update inode set mode=${dir} where id=${inode}", dir=stat.S_IFDIR|stat.S_IRWXU|stat.S_IRWXG|stat.S_IRWXO, inode=self.inum)
 		
 			self.info = Info()
 			yield self.info._load(db)

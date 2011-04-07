@@ -1,3 +1,9 @@
+python-sqlfuse (0.5.4-1) unstable; urgency=low
+
+  * Fix inode deletion; non-file inodes didn't get killed
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Thu, 07 Apr 2011 10:19:40 +0200
+
 python-sqlfuse (0.5.3-1) unstable; urgency=low
 
   * Count directory links.

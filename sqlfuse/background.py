@@ -146,7 +146,7 @@ class InodeCleaner(BackgroundJob):
 
 	@inlineCallbacks
 	def work(self):
-		self.restart = True
+		self.restart = not self.tree.single_node
 		with self.tree.db() as db:
 			try:
 				all_done,n_nodes = yield db.DoFn("select min(event),count(*) from node where root=${root} and id != ${node}", root=self.tree.root_id, node=self.tree.node_id)
@@ -257,6 +257,10 @@ class NodeCollector(BackgroundJob):
 		self.restart = True
 		with self.tree.db() as db:
 			yield db.DoSelect("select id from node where id != ${node} and root = ${root}",root=self.tree.root_id, node=self.tree.node_id, _empty=1, _callback=nodes.add)
+			if not nodes:
+				self.tree.single_node = True
+				return
+			self.tree.single_node = False
 
 			# TODO: create a topology map
 			## now create a topology map: how do I reach X from here?
@@ -284,6 +288,7 @@ class NodeCollector(BackgroundJob):
 				e = Deferred()
 				d.addBoth(lambda r: e.callback(None))
 				yield e
+		self.tree.cleaner.trigger()
 
 
 	
