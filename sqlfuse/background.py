@@ -329,7 +329,7 @@ class UpdateCollector(BackgroundJob):
 			last,do_copy = yield db.DoFn("select event,autocopy from node where id=${node}", node=self.tree.node_id)
 			if seq == last:
 				return
-			it = yield db.DoSelect("select event.id,event.inode,inode.typ,event.node,event.typ,event.range from event,node,inode where inode.id=event.inode and inode.typ='f' and event.id>${min} and event.id<=${max} and node.id=event.node and node.id != ${node} and node.root=${root} order by event.inode,event.id desc", root=self.tree.root_id, node=self.tree.node_id, min=last,max=seq, _empty=True)
+			it = yield db.DoSelect("select event.id,event.inode,event.node,event.typ,event.range from event,node,inode where inode.id=event.inode and inode.typ='f' and event.id>${min} and event.id<=${max} and node.id=event.node and node.id != ${node} and node.root=${root} order by event.inode,event.id desc", root=self.tree.root_id, node=self.tree.node_id, min=last,max=seq, _empty=True)
 
 			inode = None
 			skip = False
@@ -347,14 +347,14 @@ class UpdateCollector(BackgroundJob):
 					yield db.Do("replace into todo(node,inode,typ) values(${node},${inode},'f')", inode=inode.nodeid, node=self.tree.node_id, _empty=True)
 					self.tree.copier.trigger()
 
-			for i,inum,ityp,node,typ,r in it:
-				if ityp != 'f':
-					continue
+			for i,inum,node,typ,r in it:
 				if not inode or inode.nodeid != inum:
 					yield do_changed()
 					inode = SqlInode(self.tree,inum)
-					if inode.nodeid is not None: # locally deleted
-						yield inode._load(db)
+					if inode.nodeid is None: # locally deleted
+						data = None
+						continue
+					yield inode._load(db)
 					data = Range()
 					skip = False
 				elif skip:
@@ -377,7 +377,6 @@ class UpdateCollector(BackgroundJob):
 					if data: size = data[-1][1]
 					else: size=0
 					yield deferToThread(inode.cache._trim, (inode.size if inode.size > size else size))
-					inode.cache._trim(size)
 					self.tree.changer.note(inode.cache)
 					skip=True
 					

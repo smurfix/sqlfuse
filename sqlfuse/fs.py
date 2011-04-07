@@ -894,6 +894,7 @@ class SqlFile(File):
 			if e.errno != errno.ENOENT or not retry:
 				raise
 			self.file = yield deferToThread(open,ipath,"w+")
+			self.node.filesystem.record.new(self.node)
 
 		if self.mode & os.O_TRUNC:
 			yield deferToThread(os.ftruncate,self.file.fileno(),0)
