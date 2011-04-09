@@ -1,3 +1,10 @@
+python-sqlfuse (0.5.10-1) unstable; urgency=low
+
+  * Fixed a bad indentation mistake
+  * Fixed too-many-open-file error
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sat, 09 Apr 2011 21:34:06 +0200
+
 python-sqlfuse (0.5.9-1) unstable; urgency=low
 
   * Concurrency problem

@@ -435,10 +435,12 @@ class CopyWorker(BackgroundJob):
 						yield db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason)
 				except Exception as e:
 					log.err(reason)
-				else:
-					with self.tree.db() as db:
-						yield db.Do("delete from todo where id=${id}", id=id)
-						yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
+			else:
+				with self.tree.db() as db:
+					yield db.Do("delete from todo where id=${id}", id=id)
+					yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
+			finally:
+				yield inode.cache._close()
 
 	@inlineCallbacks
 	def work(self):

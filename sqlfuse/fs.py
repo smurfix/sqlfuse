@@ -96,7 +96,6 @@ class Cache(object,pb.Referenceable):
 		self.available = None
 		self.in_progress = Range()
 		self.lock = Lock() # protect file read/write
-		self.done_lock = DeferredLock() # protect cache close-down
 
 	def __del__(self):
 		if self.file_closer:
@@ -122,12 +121,8 @@ class Cache(object,pb.Referenceable):
 				self.file.close()
 				self.file = None
 			else:
-				yield self.done_lock.acquire()
-				try:
-					yield reactor.callInThread(self.file.close)
-					self.file = None
-				finally:
-					self.done_lock.release()
+				yield reactor.callInThread(self.file.close)
+				self.file = None
 
 
 	def __repr__(self):
