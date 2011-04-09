@@ -971,7 +971,7 @@ class SqlFile(File):
 			if self.file:
 				yield deferToThread(self.file.close)
 			if self.node.clr_inuse():
-				yield self.node.tree._remove(self.node,db)
+				yield self.node.filesystem._remove(self.node,db)
 		if self.writes:
 			self.node.filesystem.record.finish_write(self.node)
 		returnValue( None )
