@@ -168,7 +168,13 @@ class Cache(object,pb.Referenceable):
 			inode //= len(CHARS)
 		p = os.path.join(self.tree.store, *fp)
 		if not os.path.exists(p):
-			os.makedirs(p, 0o700)
+			try:
+				os.makedirs(p, 0o700)
+			except EnvironmentError as e:
+				if e.errno != errno.EEXIST:
+					raise
+			# otherwise we have two threads trying to do the same thing,
+			# which is not a problem
 		if ino < 10:
 			ino = "0"+str(ino)
 		else:
