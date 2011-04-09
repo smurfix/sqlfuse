@@ -1,8 +1,9 @@
 python-sqlfuse (0.5.9-1) unstable; urgency=low
 
   * Concurrency problem
+  * Deadlock 2
 
- -- Matthias Urlichs <smurf@smurf.noris.de>  Sat, 09 Apr 2011 20:42:54 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sat, 09 Apr 2011 20:47:41 +0200
 
 python-sqlfuse (0.5.8-1) unstable; urgency=low
 
