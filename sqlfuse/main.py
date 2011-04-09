@@ -194,6 +194,7 @@ class SqlFuse(FileSystem):
 
 	@inlineCallbacks
 	def rename(self, inode_old, name_old, inode_new, name_new, ctx=None):
+		# This is atomic, as it's a transaction
 		with self.db() as db:
 			old_inode = yield inode_old._lookup(name_old,db)
 			try:
@@ -201,8 +202,7 @@ class SqlFuse(FileSystem):
 			except EnvironmentError as e:
 				if e.errno != errno.ENOENT:
 					raise
-			yield inode_new._link(old_inode,name_new, ctx=ctx,db=db)
-			yield inode_old._unlink(name_old, ctx=ctx,db=db)
+			yield db.Do("update tree set name=${nname},parent=${ninode} where name=${oname} and parent=${oinode}", nname=name_new, ninode=inode_new.nodeid, oname=name_old, oinode=inode_old.nodeid)
 
 		returnValue( None )
 
@@ -328,9 +328,7 @@ class SqlFuse(FileSystem):
 		if not self.topology:
 			raise RuntimeError("No topology information available")
 		#for dest in self.topology.keys():
-		print("Call Each",name,repr(a),repr(k))
 		for dest in self.neighbors:
-			print("try",dest)
 			try:
 				d = self.call_node(dest,name,*a,**k)
 				def pr(r):
@@ -339,16 +337,12 @@ class SqlFuse(FileSystem):
 				d.addErrback(pr)
 				res = yield d
 			except Exception as e:
-				print("... oops,",repr(e))
 				#print_exc()
 				if e1 is None:
 					e1 = e
 			else:
 				if chk and chk():
-					print("OK",res)
 					returnValue(res)
-				print("OK?",res)
-		print("...over",e1)
 		raise e1
 
 	@inlineCallbacks

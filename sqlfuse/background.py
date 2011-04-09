@@ -36,8 +36,9 @@ class BackgroundJob(object,Service):
 		"""
 	implements(IService)
 	interval = 1.0
-	worker = None
-	workerRunning = None
+	workerCall = None # callLater
+	workerRunning = None # Deferred which waits for the worker to end
+	workerRestarted = None # Flag whether a worker restart is queued
 	restart = False # if True, start after initializing
 
 	def __init__(self,tree):
@@ -56,33 +57,36 @@ class BackgroundJob(object,Service):
 	def stopService(self):
 		"""Shutdown. Part of IService."""
 		super(BackgroundJob,self).stopService()
-		if self.worker:
-			self.worker.cancel()
-			self.worker = None
+		if self.workerCall:
+			self.workerCall.cancel()
+			self.workerCall = None
 		return self.workerRunning
 
 	def trigger(self):
 		"""Tell the worker to do something. Sometime later."""
-		if self.worker is None:
-			self.worker = reactor.callLater(self.interval,self.run)
+		if self.workerCall is None:
+			self.workerCall = reactor.callLater(self.interval,self.run)
 		else:
 			self.restart = True
 
 	def quit(self):
 		"""Trigger the worker now (for the last time)."""
-		if self.worker is None:
+		if self.workerCall is None:
 			return
-		self.worker.reset(0)
+		self.workerCall.reset(0)
 
-	def run(self):
+	def run(self, dummy=None):
 		"""Background loop."""
 
-		#print("Start worker",self.name)
+		self.workerCall = None
 		self.restart = False
+		if self.workerRunning:
+			if not self.workerRestarted:
+				self.workerRestarted = True
+				self.workerRunning.addBoth(self.run)
+			return
 		self.workerRunning = maybeDeferred(self.work)
 		def done(r):
-			#print("Stop worker",self.name)
-			self.worker = None
 			if self.restart and self.running:
 				self.trigger()
 			self.workerRunning = None
