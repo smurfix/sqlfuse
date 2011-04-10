@@ -116,14 +116,14 @@ class Cache(object,pb.Referenceable):
 		if self.file_closer:
 			self.file_closer.cancel()
 			self.file_closer = None
-		if self.file:
-			if shutting_down:
-				self.file.close()
-				self.file = None
-			else:
-				yield reactor.callInThread(self.file.close)
-				self.file = None
+		yield reactor.callInThread(self._fclose)
 
+	def _fclose(self):
+		if not self.file:
+			return
+		with self.lock:
+			self.file.close()
+			self.file = None
 
 	def __repr__(self):
 		if self.in_progress:
@@ -169,7 +169,7 @@ class Cache(object,pb.Referenceable):
 				if e.errno != errno.EEXIST:
 					raise
 			# otherwise we have two threads trying to do the same thing,
-			# which is not a problem
+			# for different cache objects, which is not a problem
 		if ino < 10:
 			ino = "0"+str(ino)
 		else:
@@ -326,7 +326,7 @@ class SqlInode(Inode):
 	def setattr(self, **attrs):
 		size = attrs.get('size',None)
 		if size is not None:
-			yield self.cache._trim(size)
+			yield deferToThread(self.cache._trim,size)
 		do_mtime = False; do_ctime = False; did_mtime = False
 		for f in inode_attrs:
 			if f == "ctime": continue
@@ -890,7 +890,7 @@ class SqlFile(File):
 	@inlineCallbacks
 	def open(self, ctx=None):
 		mode = flag2mode(self.mode)
-		ipath=self.node._file_path()
+		ipath = yield deferToThread(self.node._file_path)
 		retry = False
 		if self.mode & os.O_TRUNC:
 			self.node.size = 0

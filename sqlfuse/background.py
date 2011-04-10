@@ -356,6 +356,7 @@ class UpdateCollector(BackgroundJob):
 				if do_copy:
 					yield db.Do("replace into todo(node,inode,typ) values(${node},${inode},'f')", inode=inode.nodeid, node=self.tree.node_id, _empty=True)
 					self.tree.copier.trigger()
+				yield inode.cache._close()
 
 			for i,inum,node,typ,r in it:
 				if not inode or inode.nodeid != inum:
