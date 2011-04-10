@@ -22,7 +22,7 @@ from __future__ import division
 
 from twisted.internet import fdesc,defer,reactor,base
 from twisted.internet.abstract import FileDescriptor
-from twisted.python import failure
+from twisted.python import failure,log
 from twisted.python.threadable import isInIOThread
 from twisted.spread import pb
 
