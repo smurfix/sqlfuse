@@ -12,6 +12,7 @@ from __future__ import division, print_function, absolute_import
 __all__ = ("SqlInode",)
 
 BLOCKSIZE = 4096
+DB_RETRIES = 5
 
 import errno, fcntl, os, stat, sys
 from threading import Lock
@@ -298,9 +299,9 @@ class SqlInode(Inode):
 
 	# ___ FUSE methods ___
 
-	@inlineCallbacks
 	def getattr(self):
-		with self.filesystem.db() as db:
+		@inlineCallbacks
+		def do_getattr(db):
 			res = {'ino':self.nodeid if self.nodeid != self.filesystem.inum else 1}
 			if stat.S_ISDIR(self.mode): 
 				res['nlink'], = yield db.DoFn("select count(*) from tree,inode where tree.parent=${inode} and tree.inode=inode.id and inode.typ='d'",inode=self.nodeid)
@@ -320,7 +321,8 @@ class SqlInode(Inode):
 			res['generation'] = 1 ## TODO: inodes might be recycled (depends on the database)
 			res['attr_valid'] = self.filesystem.ATTR_VALID
 			res['entry_valid'] = self.filesystem.ENTRY_VALID
-		returnValue( res )
+			returnValue( res )
+		return self.filesystem.db(do_getattr, DB_RETRIES)
 
 	@inlineCallbacks
 	def setattr(self, **attrs):
@@ -350,8 +352,7 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
 		"""Existing file."""
-		with self.filesystem.db() as db:
-			yield self._load(db)
+		yield self.filesystem.db(self._load, DB_RETRIES)
 		if stat.S_ISDIR(self.mode):
 			raise IOError(errno.EISDIR)
 		f = self.filesystem.FileType(self,flags)
@@ -388,16 +389,14 @@ class SqlInode(Inode):
 		yield res._load(db)
 		returnValue( res )
 	    
-	@inlineCallbacks
 	def lookup(self, name):
-		with self.filesystem.db() as db:
-			inode = yield self._lookup(name,db)
-		returnValue( inode )
+		return self.filesystem.db(lambda db: self._lookup(name,db), 5)
 			
 	@inlineCallbacks
 	def create(self, name, flags,mode, umask, ctx=None):
 		"""New file."""
-		with self.filesystem.db() as db:
+		@inlineCallbacks
+		def do_create(db):
 			try:
 				inum, = yield db.DoFn("select inode from tree where parent=${par} and name=${name}", par=self.nodeid,name=name)
 			except NoData:
@@ -409,9 +408,11 @@ class SqlInode(Inode):
 				yield inode._load(db)
 	
 			res = self.filesystem.FileType(inode, flags)
+			returnValue( (inode,res) )
+		inode,res = yield self.filesystem.db(do_create, DB_RETRIES)
 
 		# opens its own database connection and therefore must be outside
-		# the with block
+		# the sub block, otherwise it'll not see the inner transaction
 		yield res.open()
 		returnValue( (inode, res) )
 
@@ -449,14 +450,12 @@ class SqlInode(Inode):
 		if self.write_timer:
 			self.write_timer.cancel()
 			self.write_timer = None
-		with self.filesystem.db() as db:
-			yield self._save(db)
+		yield self.filesystem.db(self._save, DB_RETRIES)
 		returnValue (None)
 			
 	@inlineCallbacks
 	def unlink(self, name, ctx=None):
-		with self.filesystem.db() as db:
-			yield self._unlink(name,ctx=ctx,db=db)
+		yield self.filesystem.db(lambda db: self._unlink(name,ctx=ctx,db=db), DB_RETRIES)
 		returnValue( None )
 
 	@inlineCallbacks
@@ -474,9 +473,9 @@ class SqlInode(Inode):
 		self.size -= len(name)+1
 		returnValue( None )
 
-	@inlineCallbacks
 	def rmdir(self, name, ctx=None):
-		with self.filesystem.db() as db:
+		@inlineCallbacks
+		def do_rmdir(db):
 			inode = yield self._lookup(name,db)
 			if not stat.S_ISDIR(self.mode):
 				raise IOError(errno.ENOTDIR)
@@ -485,23 +484,23 @@ class SqlInode(Inode):
 				raise IOError(errno.ENOTEMPTY)
 			db.call_committed(self.filesystem.rooter.d_dir,-1)
 			yield inode._remove(db)
-		returnValue( None )
+		return self.filesystem.db(do_rmdir, DB_RETRIES)
 
 	@inlineCallbacks
 	def symlink(self, name, target, ctx=None):
 		if len(target) > self.filesystem.info.targetlen:
 			raise IOError(errno.EDIR,"Cannot link a directory")
-		with self.filesystem.db() as db:
-			inode = yield self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,target=target)
+		inode = yield self.filesystem.db(lambda db: self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,target=target), DB_RETRIES)
 		returnValue( inode )
 
-	@inlineCallbacks
 	def link(self, oldnode,target, ctx=None):
-		with self.filesystem.db() as db:
+		@inlineCallbacks
+		def do_link(db):
 			if stat.S_ISDIR(oldnode.mode):
 				raise IOError(errno.ENAMETOOLONG,"target entry too long")
 			res = yield self._link(oldnode,target, ctx=ctx,db=db)
-		returnValue( res )
+			returnValue( res )
+		return self.filesystem.db(do_link, DB_RETRIES)
 
 	@inlineCallbacks
 	def _link(self, oldnode,target, ctx=None,db=None):
@@ -514,27 +513,20 @@ class SqlInode(Inode):
 		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
 			
 
-	@inlineCallbacks
 	def mknod(self, name, mode, rdev, umask, ctx=None):
-		with self.filesystem.db() as db:
-			inode = yield self._new_inode(db,name,mode,ctx,rdev)
-		returnValue( inode )
+		return self.filesystem.db(lambda db: self._new_inode(db,name,mode,ctx,rdev), DB_RETRIES)
 
-	@inlineCallbacks
 	def mkdir(self, name, mode,umask, ctx=None):
-		with self.filesystem.db() as db:
+		@inlineCallbacks
+		def do_mkdir(db):
 			inode = yield self._new_inode(db,name,(mode&0o7777&~umask)|stat.S_IFDIR,ctx)
 			db.call_committed(self.filesystem.rooter.d_dir,1)
-		returnValue( inode )
+			returnValue( inode )
+		return self.filesystem.db(do_mkdir, DB_RETRIES)
 
-	@inlineCallbacks
-	def _writer1(self):
-		with self.filesystem.db() as db:
-			yield self._save(db)
-		returnValue( None )
 	def _writer(self):
 		self.write_timer = None
-		self._writer1().addErrback(lambda r: r.printTraceback(file=sys.stderr))
+		self.filesystem.db(self._save, DB_RETRIES).addErrback(lambda r: r.printTraceback(file=sys.stderr))
 
 	@inlineCallbacks
 	def _remove(self,db):
@@ -592,9 +584,9 @@ class SqlInode(Inode):
 		return self.cache._file_path()
 
 
-	@inlineCallbacks
 	def getxattr(self, name, ctx=None):
-		with self.filesystem.db() as db:
+		@inlineCallbacks
+		def do_getxattr(db):
 			nid = yield self.filesystem.xattr_id(name,db,False)
 			if nid is None:
 				raise IOError(errno.ENOATTR)
@@ -602,13 +594,14 @@ class SqlInode(Inode):
 				val, = yield db.DoFn("select value from xattr where inode=${inode} and name=${name}", inode=self.nodeid,name=nid)
 			except NoData:
 				raise IOError(errno.ENOATTR)
-		returnValue( val )
+			returnValue( val )
+		return self.filesystem.db(do_getxattr, DB_RETRIES)
 
 	@inlineCallbacks
 	def setxattr(self, name, value, flags, ctx=None):
 		if len(value) > self.filesystem.info.attrlen:
 			raise IOError(errno.E2BIG)
-		with self.filesystem.db() as db:
+		def do_setxattr(db):
 			nid = yield self.filesystem.xattr_id(name,db,True)
 			try:
 				yield db.Do("update xattr set value=${value},seq=seq+1 where inode=${inode} and name=${name}", inode=self.nodeid,name=nid,value=value)
@@ -619,21 +612,23 @@ class SqlInode(Inode):
 			else: 
 				if flags & XATTR_CREATE:
 					raise IOError(errno.EEXIST)
-		returnValue( None )
+			returnValue( None )
+		return self.filesystem.db(do_setxattr, DB_RETRIES)
 
-	@inlineCallbacks
 	def listxattrs(self, ctx=None):
-		res = []
-		with self.filesystem.db() as db:
+		@inlineCallbacks
+		def do_listxattrs(db):
+			res = []
 			i = yield db.DoSelect("select name from xattr where inode=${inode}", inode=self.nodeid, _empty=1,_store=1)
 			for nid, in i:
 				name = yield self.filesystem.xattr_name(nid,db)
 				res.append(name)
-		returnValue( res )
+			returnValue( res )
+		return self.filesystem.db(do_listxattrs, DB_RETRIES)
 
-	@inlineCallbacks
 	def removexattr(self, name, ctx=None):
-		with self.filesystem.db() as db:
+		@inlineCallbacks
+		def do_removexattr(db):
 			nid = self.filesystem.xattr_id(name, db,False)
 			if nid is None:
 				raise IOError(errno.ENOATTR)
@@ -641,7 +636,8 @@ class SqlInode(Inode):
 				yield db.Do("delete from xattr where inode=${inode} and name=${name}", inode=self.nodeid,name=nid)
 			except NoData:
 				raise IOError(errno.ENOATTR)
-		returnValue( None )
+			returnValue( None )
+		return self.filesystem.db(do_removexattr, DB_RETRIES)
 
 	def readlink(self, ctx=None):
 		self.do_atime()
@@ -961,12 +957,14 @@ class SqlFile(File):
 	@inlineCallbacks
 	def release(self, ctx=None):
 		"""The last process closes the file."""
-		with self.node.filesystem.db() as db:
+		@inlineCallbacks
+		def do_release(db):
 			yield self.node._save(db)
 			if self.file:
 				yield deferToThread(self.file.close)
 			if self.node.clr_inuse():
 				yield self.node.filesystem._remove(self.node,db)
+		yield self.node.filesystem.db(do_release, DB_RETRIES)
 		if self.writes:
 			self.node.filesystem.record.finish_write(self.node)
 		returnValue( None )
@@ -1052,6 +1050,7 @@ class SqlDir(Dir):
 			# need to mangle the type field
 			callback(a,mode_type[stat.S_IFMT(b)],c,d)
 
+		# Since we send incremental results here, we can't restart.
 		with tree.db() as db:
 			if not offset:
 				_callback(".",self.node.mode,self.node.nodeid,1)
@@ -1071,8 +1070,7 @@ class SqlDir(Dir):
 	@inlineCallbacks
 	def release(self, ctx=None):
 		if self.node.clr_inuse():
-			with self.node.filesystem.db() as db:
-				yield self.node._remove(db)
+			yield self.node.filesystem.db(self.node._remove, DB_RETRIES)
 		returnValue( None )
 
 	def sync(self, ctx=None):

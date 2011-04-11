@@ -11,6 +11,8 @@ from __future__ import division, print_function, absolute_import
 
 __all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker","InodeCleaner")
 
+DB_RETRIES = 5
+
 from collections import defaultdict
 import os, sys
 from traceback import print_exc,format_exc
@@ -102,10 +104,10 @@ class BackgroundJob(object,Service):
 class RootUpdater(BackgroundJob):
 	"""I update my root statistics (number of inodes and blocks) periodically, if necessary"""
 	def __init__(self,tree):
-		super(RootUpdater,self).__init__(tree)
 		self.delta_inode = 0
 		self.delta_dir = 0
 		self.delta_block = 0
+		super(RootUpdater,self).__init__(tree)
 
 	def d_inode(self,delta):
 		"""The number of my inodes changed."""
@@ -132,8 +134,7 @@ class RootUpdater(BackgroundJob):
 		d_dir = self.delta_dir; self.delta_dir = 0
 		d_block = self.delta_block; self.delta_block = 0
 		if d_inode or d_block or d_dir:
-			with self.tree.db() as db:
-				yield db.Do("update root set nfiles=nfiles+${inodes}, nblocks=nblocks+${blocks}, ndirs=ndirs+${dirs}", root=self.tree.root_id, inodes=d_inode, blocks=d_block, dirs=d_dir)
+			yield self.tree.db(lambda db: db.Do("update root set nfiles=nfiles+${inodes}, nblocks=nblocks+${blocks}, ndirs=ndirs+${dirs}", root=self.tree.root_id, inodes=d_inode, blocks=d_block, dirs=d_dir), DB_RETRIES)
 		returnValue( None )
 
 
@@ -145,14 +146,16 @@ class InodeCleaner(BackgroundJob):
 	interval = 30
 	restart = True
 	def __init__(self,tree):
-		super(InodeCleaner,self).__init__(tree)
 		self.interval += 60*tree.slow
+		super(InodeCleaner,self).__init__(tree)
 
 	@inlineCallbacks
 	def work(self):
 		self.restart = not self.tree.single_node
 		inums = []
-		with self.tree.db() as db:
+
+		@inlineCallbacks
+		def do_work(db):
 			try:
 				all_done,n_nodes = yield db.DoFn("select min(event),count(*) from node where root=${root} and id != ${node}", root=self.tree.root_id, node=self.tree.node_id)
 			except NoData:
@@ -169,11 +172,11 @@ class InodeCleaner(BackgroundJob):
 
 					yield db.DoSelect("select inode from event where node=${node} and typ = 'd' and id < ${id}", id=last_syn, node=self.tree.node_id, _callback=inums.append, _empty=True)
 					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id, _empty=True)
+		yield self.tree.db(do_work, DB_RETRIES)
 
 		# more deadlock prevention
 		if inums:
-			with self.tree.db() as db:
-				yield db.Do("delete from inode where id in (%s)" % ",".join((str(x) for x in inums)), _empty=True)
+			yield self.tree.db(lambda db: db.Do("delete from inode where id in (%s)" % ",".join((str(x) for x in inums)), _empty=True), DB_RETRIES)
 
 
 class Recorder(BackgroundJob):
@@ -183,41 +186,44 @@ class Recorder(BackgroundJob):
 		The other node will read these records and update their state.
 		"""
 	def __init__(self,tree):
-		super(Recorder,self).__init__(tree)
 		self.data = []
+		super(Recorder,self).__init__(tree)
 
 	@inlineCallbacks
 	def work(self):
 		"""Write change records, or a SYN if there were no new changes."""
 		d = self.data
 		self.data = []
-		with self.tree.db() as db:
+		@inlineCallbacks
+		def do_work(db):
 			if not d:
 				yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=self.tree.inum,node=self.tree.node_id,data=None,event='s' )
 			else:
-				for event,inum,data in d:
-					yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=inum,node=self.tree.node_id,data=data,event=event )
+				for event,inode,data in d:
+					if not inode.nodeid:
+						continue
+					yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=inode.nodeid,node=self.tree.node_id,data=data,event=event )
 				self.restart = True
-		returnValue( None )
+		yield self.tree.db(do_work, DB_RETRIES)
 		
 	def delete(self,inode):
 		"""Record inode deletion"""
-		self.data.append(('d',inode.nodeid,None))
+		self.data.append(('d',inode,None))
 		self.trigger()
 	
 	def new(self,inode):
 		"""Record inode creation"""
-		self.data.append(('n',inode.nodeid,None))
+		self.data.append(('n',inode,None))
 		self.trigger()
 
 	def change(self,inode,data):
 		"""Record changed data"""
-		self.data.append(('c',inode.nodeid,data))
+		self.data.append(('c',inode,data))
 		self.trigger()
 
 	def finish_write(self,inode):
 		"""Record finished changing data, i.e. close-file"""
-		self.data.append(('f',inode.nodeid,None))
+		self.data.append(('f',inode,None))
 		self.trigger()
 
 
@@ -226,23 +232,27 @@ class CacheRecorder(BackgroundJob):
 		I record an inode's local caching state.
 		"""
 	def __init__(self,tree):
-		super(CacheRecorder,self).__init__(tree)
 		self.caches = set()
+		super(CacheRecorder,self).__init__(tree)
 
 	@inlineCallbacks
 	def work(self):
 		nn = self.caches
 		self.caches = set()
+
+		@inlineCallbacks
+		def do_work(n,db):
+			if n.nodeid is None:
+				return
+			if n.cache_id is None:
+				n.cache_id = yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.nodeid, node=self.tree.node_id, data=n.known.encode())
+			else:
+				yield db.Do("update cache set cached=${data} where id=${cache}", cache=n.cache_id, data=n.known.encode(), _empty=True)
 		for n in nn:
-			with self.tree.db() as db:
-				if n.cache_id is None:
-					n.cache_id = yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.nodeid, node=self.tree.node_id, data=n.known.encode())
-				else:
-					yield db.Do("update cache set cached=${data} where id=${cache}", cache=n.cache_id, data=n.known.encode(), _empty=True)
+			yield self.tree.db(lambda db: do_work(n,db), DB_RETRIES)
 
 	def note(self,node):
 		"""Record that this inode's cache state needs to be written."""
-		assert not isinstance(node,SqlInode)
 		self.caches.add(node)
 		self.trigger()
 	
@@ -255,14 +265,15 @@ class NodeCollector(BackgroundJob):
 	interval = 60
 	restart = True
 	def __init__(self,tree):
-		super(NodeCollector,self).__init__(tree)
 		self.interval += 90*tree.slow
+		super(NodeCollector,self).__init__(tree)
 	
 	@inlineCallbacks
 	def work(self):
 		nodes = set()
 		self.restart = True
-		with self.tree.db() as db:
+		@inlineCallbacks
+		def do_work(db):
 			yield db.DoSelect("select id from node where id != ${node} and root = ${root}",root=self.tree.root_id, node=self.tree.node_id, _empty=1, _callback=nodes.add)
 			if not nodes:
 				self.tree.single_node = True
@@ -273,6 +284,8 @@ class NodeCollector(BackgroundJob):
 			## now create a topology map: how do I reach X from here?
 			topo = yield self.get_paths(db)
 			topo = next_hops(topo, self.tree.node_id)
+			returnValue( topo )
+		topo = yield self.tree.db(do_work, DB_RETRIES)
 
 		# drop obsolete nodes
 		for k in self.tree.remote.keys():
@@ -331,7 +344,8 @@ class UpdateCollector(BackgroundJob):
 	def work(self):
 		nodes = set()
 		self.restart = True
-		with self.tree.db() as db:
+		@inlineCallbacks
+		def do_work(db):
 			seq, = yield db.DoFn("select max(event.id) from event,node where typ='s' and node.root=${root} and node.id=event.node", root=self.tree.root_id)
 			last,do_copy = yield db.DoFn("select event,autocopy from node where id=${node}", node=self.tree.node_id)
 			if seq == last:
@@ -398,6 +412,7 @@ class UpdateCollector(BackgroundJob):
 
 			yield do_changed()
 			yield db.Do("update node set event=${event} where id=${node}", node=self.tree.node_id, event=seq, _empty=True)
+		yield self.tree.db(do_work, DB_RETRIES)
 #			if self.tree.node_id == 3:
 #				import sqlmix.twisted as t
 #				t.breaker = True
@@ -412,11 +427,11 @@ class CopyWorker(BackgroundJob):
 	interval = 0.1
 	restart = True
 	def __init__(self,tree):
-		super(CopyWorker,self).__init__(tree)
 		self.nfiles = 100
 		self.nworkers = 3
 		self.last_entry = None
 		self.workers = set() # inode numbers
+		super(CopyWorker,self).__init__(tree)
 	
 	@inlineCallbacks
 	def fetch(self):
@@ -432,14 +447,14 @@ class CopyWorker(BackgroundJob):
 			except Exception as e:
 				reason = format_exc()
 				try:
-					with self.tree.db() as db:
-						yield db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason)
+					yield self.tree.db(lambda db: db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason), DB_RETRIES)
 				except Exception as e:
 					log.err(reason)
 			else:
-				with self.tree.db() as db:
+				def did_fetch(db):
 					yield db.Do("delete from todo where id=${id}", id=id)
 					yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
+				yield self.tree.db(did_fetch)
 			finally:
 				yield inode.cache._close()
 
@@ -448,8 +463,8 @@ class CopyWorker(BackgroundJob):
 		"""\
 			Fetch missing file( part)s.
 			"""
-		with self.tree.db() as db:
-			workers = set()
+		@inlineCallbacks
+		def do_work(db):
 			f=""
 			if self.last_entry:
 				f = " and id > ${last}"
@@ -458,16 +473,23 @@ class CopyWorker(BackgroundJob):
 			def app(*a):
 				entries.append(a)
 			yield db.DoSelect("select id,inode,typ from todo where node=${node}"+f+" order by id limit ${nfiles}", node=self.tree.node_id,nfiles=self.nfiles,last=self.last_entry,_empty=True,_callback=app)
-			if not entries:
-				self.last_entry = None
-				return
+			returnValue( entries )
+
+		entries = yield self.tree.db(do_work, DB_RETRIES)
+		if not entries:
+			self.last_entry = None
+			return
 
 		self.restart = True
 		self._queue = DeferredQueue()
 		defs = []
-		for i in range(self.nworkers):
+		nworkers = len(entries)//5+1
+		if nworkers > self.nworkers:
+			nworkers = self.nworkers
+		for i in range(nworkers):
 			defs.append(self.fetch())
 
+		workers = set()
 		for id,inum,typ in entries:
 			if inum in workers:
 				pass
@@ -478,11 +500,10 @@ class CopyWorker(BackgroundJob):
 			inode = SqlInode(self.tree,inum)
 			if typ != 'f': # TODO: what about deletions?
 				continue
-			with self.tree.db() as db:
-				yield inode._load(db)
+			yield self.tree.db(inode._load, DB_RETRIES)
 			self._queue.put((id,inode))
 
-		for i in range(self.nworkers):
+		for i in range(nworkers):
 			self._queue.put(None)
 		yield DeferredList(defs)
 		self._queue = None
