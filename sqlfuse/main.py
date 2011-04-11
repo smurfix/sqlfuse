@@ -11,6 +11,8 @@ from __future__ import division, print_function, absolute_import
 
 __all__ = ('SqlFuse',)
 
+DB_RETRIES = 5
+
 """\
 This module implements the main server object. It opens a FUSE port.
 
@@ -178,24 +180,12 @@ class SqlFuse(FileSystem):
 #		ino, = self.db.DoFn(" ".join(q),**qa)
 #		return ino,name
 
-	def handle_exc(*a,**k): #self,fn,exc):
-		log_call()
-		traceback.print_exc()
-		self.db.rollback()
-
-	def done(self, exc=None):
-		if exc is None:
-			self.db.commit()
-		else:
-			self.db.rollback()
-
-
 	### a few FUSE calls which are not handled by the inode object
 
-	@inlineCallbacks
 	def rename(self, inode_old, name_old, inode_new, name_new, ctx=None):
 		# This is atomic, as it's a transaction
-		with self.db() as db:
+		@inlineCallbacks
+		def do_rename(db):
 			old_inode = yield inode_old._lookup(name_old,db)
 			try:
 				yield inode_new._unlink(name_new, ctx=ctx,db=db)
@@ -203,8 +193,8 @@ class SqlFuse(FileSystem):
 				if e.errno != errno.ENOENT:
 					raise
 			yield db.Do("update tree set name=${nname},parent=${ninode} where name=${oname} and parent=${oinode}", nname=name_new, ninode=inode_new.nodeid, oname=name_old, oinode=inode_old.nodeid)
-
-		returnValue( None )
+			returnValue( None )
+		return self.db(do_rename, DB_RETRIES)
 
 
 ## not supported, we're not file-backed
@@ -228,8 +218,7 @@ class SqlFuse(FileSystem):
 		osb = os.statvfs(self.store)
 		s['bsize'] = BLOCKSIZE
 		s['frsize'] = BLOCKSIZE
-		with self.db() as db:
-			s['blocks'],s['files'] = yield db.DoFn("select nblocks,nfiles from root where id=${root}", root=self.root_id)
+		s['blocks'],s['files'] = yield self.db(lambda db: db.DoFn("select nblocks,nfiles from root where id=${root}", root=self.root_id), DB_RETRIES)
 		s['bfree'] = (osb.f_bfree * osb.f_bsize) // BLOCKSIZE
 		s['bavail'] = (osb.f_bavail * osb.f_bsize) // BLOCKSIZE
 		s['ffree'] = osb.f_ffree
@@ -355,7 +344,9 @@ class SqlFuse(FileSystem):
 		reactor.addSystemEventTrigger('during', 'shutdown', db.stopService)
 
 		self.node = node
-		with self.db() as db:
+
+		@inlineCallbacks
+		def do_init_db(db):
 			try:
 				self.node_id,self.root_id,self.inum,self.store,self.port = yield db.DoFn("select node.id,root.id,root.inode,node.files,node.port from node,root where root.id=node.root and node.name=${name}", name=node)
 			except NoData:
@@ -378,8 +369,10 @@ class SqlFuse(FileSystem):
 
 			root = SqlInode(self,self.inum)
 			yield root._load(db)
+			returnValue( root )
+
+		root = yield self.db(do_init_db)
 		super(SqlFuse,self).__init__(root=root, filetype=SqlFile, dirtype=SqlDir)
-		returnValue( None )
 
 	@inlineCallbacks
 	def init(self, opt):
