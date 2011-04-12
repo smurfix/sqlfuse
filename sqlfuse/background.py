@@ -9,7 +9,7 @@
 
 from __future__ import division, print_function, absolute_import
 
-__all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker","InodeCleaner")
+__all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker","InodeCleaner","InodeWriter")
 
 DB_RETRIES = 5
 
@@ -235,25 +235,50 @@ class CacheRecorder(BackgroundJob):
 		self.caches = set()
 		super(CacheRecorder,self).__init__(tree)
 
-	@inlineCallbacks
 	def work(self):
 		nn = self.caches
 		self.caches = set()
 
 		@inlineCallbacks
-		def do_work(n,db):
-			if n.nodeid is None:
-				return
-			if n.cache_id is None:
-				n.cache_id = yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.nodeid, node=self.tree.node_id, data=n.known.encode())
-			else:
-				yield db.Do("update cache set cached=${data} where id=${cache}", cache=n.cache_id, data=n.known.encode(), _empty=True)
-		for n in nn:
-			yield self.tree.db(lambda db: do_work(n,db), DB_RETRIES)
+		def do_work(db):
+			for n in nn:
+				if n.nodeid is None:
+					return
+				if n.cache_id is None:
+					n.cache_id = yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.nodeid, node=self.tree.node_id, data=n.known.encode())
+				else:
+					yield db.Do("update cache set cached=${data} where id=${cache}", cache=n.cache_id, data=n.known.encode(), _empty=True)
+		return self.tree.db(lambda db: do_work(db), DB_RETRIES)
 
 	def note(self,node):
 		"""Record that this inode's cache state needs to be written."""
 		self.caches.add(node)
+		self.trigger()
+	
+
+class InodeWriter(BackgroundJob):
+	"""\
+		I write inode state.
+		"""
+	def __init__(self,tree):
+		self.inodes = set()
+		super(InodeWriter,self).__init__(tree)
+
+	def work(self):
+		nn = self.inodes
+		self.inodes = set()
+
+		@inlineCallbacks
+		def do_work(db):
+			for n in nn:
+				if n.nodeid is None:
+					return
+				yield n._save(db)
+		return self.tree.db(lambda db: do_work(db), DB_RETRIES)
+
+	def note(self,node):
+		"""Record that this inode's cache state needs to be written."""
+		self.inodes.add(node)
 		self.trigger()
 	
 

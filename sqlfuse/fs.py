@@ -447,9 +447,6 @@ class SqlInode(Inode):
 		"""\
 			Drop this node: save.
 			"""
-		if self.write_timer:
-			self.write_timer.cancel()
-			self.write_timer = None
 		yield self.filesystem.db(self._save, DB_RETRIES)
 		returnValue (None)
 			
@@ -524,16 +521,8 @@ class SqlInode(Inode):
 			returnValue( inode )
 		return self.filesystem.db(do_mkdir, DB_RETRIES)
 
-	def _writer(self):
-		self.write_timer = None
-		self.filesystem.db(self._save, DB_RETRIES).addErrback(lambda r: r.printTraceback(file=sys.stderr))
-
 	@inlineCallbacks
 	def _remove(self,db):
-		if self.write_timer:
-			self.write_timer.cancel()
-			self.write_timer = None
-
 		entries = []
 		def app(parent,name):
 			entries.append((parent,name))
@@ -566,9 +555,6 @@ class SqlInode(Inode):
 				if e.errno != errno.ENOENT:
 					raise
 
-	def __delete__(self):
-		assert self.write_timer is None
-		
 	def do_atime(self, is_dir=0):
 		"""\
 			Rules for atime update.
@@ -711,7 +697,6 @@ class SqlInode(Inode):
 		self.inuse = 0
 		self.changes = Range()
 		self.cache = NotKnown
-		self.write_timer = None
 		# defer anything we only need when loaded to after _load is called
 
 	@inlineCallbacks
@@ -766,8 +751,7 @@ class SqlInode(Inode):
 		if self.attrs[key] != value:
 			self.attrs[key] = value
 			self.updated.add(key)
-			if self.write_timer is None:
-				self.write_timer = reactor.callLater(self.filesystem.ATTR_VALID[0]/2, self._writer)
+			self.filesystem.ichanger.note(self)
 
 	@inlineCallbacks
 	def _save(self, db, new_seq=None):

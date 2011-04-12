@@ -32,7 +32,7 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
 from sqlfuse import DBVERSION
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE
-from sqlfuse.background import RootUpdater,InodeCleaner,Recorder,NodeCollector,CacheRecorder,UpdateCollector,CopyWorker
+from sqlfuse.background import RootUpdater,InodeCleaner,Recorder,NodeCollector,InodeWriter,CacheRecorder,UpdateCollector,CopyWorker
 from sqlfuse.node import SqlNode,NoLink,MAX_BLOCK
 from sqlmix.twisted import DbPool,NoData
 
@@ -94,6 +94,7 @@ class SqlFuse(FileSystem):
 	collector = DummyQuit()
 	cleaner = DummyQuit()
 	changer = DummyChanger()
+	ichanger = DummyChanger()
 	updatefinder = DummyQuit()
 	copier = DummyQuit()
 
@@ -385,7 +386,7 @@ class SqlFuse(FileSystem):
 		self.services = MultiService()
 		for a,b in (('rooter',RootUpdater),
 				('updatefinder',UpdateCollector), ('changer',CacheRecorder),
-				('record',Recorder), ('collector', NodeCollector),
+				('record',Recorder), ('collector', NodeCollector), ('ichanger',InodeWriter),
 				('copier',CopyWorker), ('cleaner', InodeCleaner)):
 			b = b(self)
 			setattr(self,a,b)
