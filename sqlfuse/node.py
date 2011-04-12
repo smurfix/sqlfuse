@@ -132,6 +132,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			d = Deferred()
 			self._connector.chainDeferred(d)
 			yield d
+			assert self._server is not None
 		except NoLink:
 			raise
 		except Exception as e: # no connection
@@ -289,6 +290,11 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		def make_callout(name):
 			def _callout(self, *a,**k):
 				d = self.connect()
+				def check_link(r):
+					if self._server is None:
+						# TODO: this really should not happen
+						raise NoLink
+				d.addCallback(check_link)
 				d.addCallback(lambda r: getattr(self._server,"do_"+name)(self,*a,**k))
 				def log_me(r):
 					if not r.check(NoLink):
