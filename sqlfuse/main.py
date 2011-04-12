@@ -318,7 +318,7 @@ class SqlFuse(FileSystem):
 
 	@inlineCallbacks
 	def each_node(self,chk,name,*a,**k):
-		e1 = None
+		e = None
 		if not self.topology:
 			raise RuntimeError("No topology information available")
 		#for dest in self.topology.keys():
@@ -330,14 +330,16 @@ class SqlFuse(FileSystem):
 					return r
 				d.addErrback(pr)
 				res = yield d
-			except Exception as e:
+			except Exception:
 				#print_exc()
-				if e1 is None:
-					e1 = e
+				if e is None:
+					e = sys.exc_info()
 			else:
 				if chk and chk():
 					returnValue(res)
-		raise e1
+		if e is None:
+			raise NoLink("any node")
+		raise e[0],e[1],e[2]
 
 	@inlineCallbacks
 	def init_db(self,db,node):
