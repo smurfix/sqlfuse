@@ -597,10 +597,11 @@ class SqlInode(Inode):
 			returnValue( val )
 		return self.filesystem.db(do_getxattr, DB_RETRIES)
 
-	@inlineCallbacks
 	def setxattr(self, name, value, flags, ctx=None):
 		if len(value) > self.filesystem.info.attrlen:
 			raise IOError(errno.E2BIG)
+
+		@inlineCallbacks
 		def do_setxattr(db):
 			nid = yield self.filesystem.xattr_id(name,db,True)
 			try:
