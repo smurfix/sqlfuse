@@ -150,10 +150,10 @@ class InodeCleaner(BackgroundJob):
 	@inlineCallbacks
 	def work(self):
 		self.restart = not self.tree.single_node
-		inums = []
 
 		@inlineCallbacks
 		def do_work(db):
+			inums = []
 			try:
 				all_done,n_nodes = yield db.DoFn("select min(event),count(*) from node where root=${root} and id != ${node}", root=self.tree.root_id, node=self.tree.node_id)
 			except NoData:
@@ -170,7 +170,8 @@ class InodeCleaner(BackgroundJob):
 
 					yield db.DoSelect("select inode from event where node=${node} and typ = 'd' and id < ${id}", id=last_syn, node=self.tree.node_id, _callback=inums.append, _empty=True)
 					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id, _empty=True)
-		yield self.tree.db(do_work, DB_RETRIES)
+			returnValue( inums )
+		inums = yield self.tree.db(do_work, DB_RETRIES)
 
 		# more deadlock prevention
 		if inums:
