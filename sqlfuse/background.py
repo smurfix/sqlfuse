@@ -474,10 +474,11 @@ class CopyWorker(BackgroundJob):
 				except Exception as e:
 					log.err(reason)
 			else:
+				@inlineCallbacks
 				def did_fetch(db):
 					yield db.Do("delete from todo where id=${id}", id=id)
 					yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
-				yield self.tree.db(did_fetch)
+				yield self.tree.db(did_fetch, DB_RETRIES)
 			finally:
 				yield inode.cache._close()
 
