@@ -204,6 +204,14 @@ def cleanFailure(self):
 #	_tig(self,g)
 #failure.Failure.throwExceptionIntoGenerator = tig
 	
+# use NameError because the sqlmix.twisted.DbPool._call() will not retry me
+def RemoteError(NameError):
+	def __init__(self,type,value):
+		self.type = type
+		self.value = value
+	def __str__(self):
+		return "%s: %s <Remote>" % (self.type,self.value)
+		
 def _tig(self, g):
         """
         This is a clone of #failure.Failure.throwExceptionIntoGenerator()
@@ -211,8 +219,8 @@ def _tig(self, g):
         are converted to a RuntimeError.
         """
         if isinstance(self.value,str):
-            self.type = RuntimeError
-            self.value = RuntimeError(self.value)
+            self.value = RemoteError(self.type,self.value)
+            self.type = RemoteError
         return g.throw(self.type, self.value, self.tb)
 failure.Failure.throwExceptionIntoGenerator = _tig
 
