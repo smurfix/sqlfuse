@@ -11,8 +11,6 @@ from __future__ import division, print_function, absolute_import
 
 __all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker","InodeCleaner","InodeWriter")
 
-DB_RETRIES = 5
-
 from collections import defaultdict
 import os, sys
 from traceback import print_exc,format_exc
@@ -26,7 +24,7 @@ from twisted.internet.threads import deferToThread
 from twisted.python import log
 
 from sqlmix import NoData
-from sqlfuse.fs import BLOCKSIZE,SqlInode
+from sqlfuse.fs import BLOCKSIZE,SqlInode,DB_RETRIES
 from sqlfuse.range import Range
 from sqlfuse.topo import next_hops
 from sqlfuse.node import NoLink

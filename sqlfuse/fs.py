@@ -431,8 +431,10 @@ class SqlInode(Inode):
 		if rdev is None: rdev=0 # not NULL
 		if target: size=len(target)
 		else: size=0
-		self.mtime = nowtuple()
-		self.size += len(name)+1
+		def adj_size():
+			self.mtime = nowtuple()
+			self.size += len(name)+1
+		db.call_committed(adj_size)
 
 		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size,typ) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size},${typ})", root=self.filesystem.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size,typ=mode_char[stat.S_IFMT(mode)])
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
@@ -466,8 +468,10 @@ class SqlInode(Inode):
 		if cnt == 0:
 			if not inode.defer_delete():
 				yield inode._remove(db)
-		self.mtime = nowtuple()
-		self.size -= len(name)+1
+		def adj_size():
+			self.mtime = nowtuple()
+			self.size -= len(name)+1
+		db.call_committed(adj_size)
 		returnValue( None )
 
 	def rmdir(self, name, ctx=None):
@@ -531,8 +535,10 @@ class SqlInode(Inode):
 			p,name = p
 			p = SqlInode(self.filesystem,p)
 			yield p._load(db)
-			p.mtime = nowtuple()
-			p.size -= len(name)+1
+			def adj_size(p):
+				p.mtime = nowtuple()
+				p.size -= len(name)+1
+			db.call_committed(adj_size,p)
 		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
 		if self.filesystem.single_node or not stat.S_ISREG(self.mode):
 			yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)

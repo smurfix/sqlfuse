@@ -11,8 +11,6 @@ from __future__ import division, print_function, absolute_import
 
 __all__ = ('SqlFuse',)
 
-DB_RETRIES = 5
-
 """\
 This module implements the main server object. It opens a FUSE port.
 
@@ -30,8 +28,8 @@ from twisted.application.service import MultiService
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
-from sqlfuse import DBVERSION
-from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE
+from sqlfuse import DBVERSION,nowtuple
+from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE,DB_RETRIES
 from sqlfuse.background import RootUpdater,InodeCleaner,Recorder,NodeCollector,InodeWriter,CacheRecorder,UpdateCollector,CopyWorker
 from sqlfuse.node import SqlNode,NoLink,MAX_BLOCK
 from sqlmix.twisted import DbPool,NoData
@@ -194,6 +192,12 @@ class SqlFuse(FileSystem):
 				if e.errno != errno.ENOENT:
 					raise
 			yield db.Do("update tree set name=${nname},parent=${ninode} where name=${oname} and parent=${oinode}", nname=name_new, ninode=inode_new.nodeid, oname=name_old, oinode=inode_old.nodeid)
+			def adj_size():
+				old_inode.mtime = nowtuple()
+				old_inode.size -= len(name_old)+1
+				new_inode.mtime = nowtuple()
+				new_inode.size += len(name_new)+1
+			db.call_committed(adj_size)
 			returnValue( None )
 		return self.db(do_rename, DB_RETRIES)
 
