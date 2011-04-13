@@ -30,7 +30,7 @@ from twisted.internet.defer import inlineCallbacks,Deferred
 from twisted.internet import error as err
 
 from sqlfuse.connect import INode
-from sqlfuse.fs import SqlInode
+from sqlfuse.fs import SqlInode,DB_RETRIES
 from sqlmix import NoData
 
 INITIAL_RETRY=1
