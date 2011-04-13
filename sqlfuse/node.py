@@ -20,11 +20,10 @@ Right now, only native interconnection is supported.
 __all__ = ('SqlNode','NoLink','DataMissing','NoConnection')
 
 import os
-from traceback import print_exc
 
 from zope.interface import implements
 
-from twisted.python import log
+from twisted.python import log,failure
 from twisted.spread import pb
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks,Deferred
@@ -85,7 +84,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			r.trap(NoLink)
 			print("There is no way to connect to node",self.node_id)
 		d.addErrback(grab_nolink)
-		d.addErrback(log.err)
+		d.addErrback(lambda r: log.err(r,"Connection timer"))
 
 	def connect_retry(self):
 		"""\
@@ -136,10 +135,11 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		except NoLink:
 			raise
 		except Exception as e: # no connection
-			if isinstance(e,err.ConnectionRefusedError):
-				pass
+			if isinstance(e,(err.ConnectionRefusedError,NoConnection)):
+				print("No link to %d, retrying"%(self.node_id,))
 			else:
-				log.err()
+				f = failure.Failure()
+				log.err(f,"Connecting remote")
 			self.retry_timeout *= 1.3
 			if self.retry_timeout > MAX_RETRY:
 				self.retry_timeout = MAX_RETRY
@@ -171,7 +171,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			if self.echo_timer:
 				self.echo_timer.cancel()
 				self.echo_timer = None
-			log.err(r)
+			log.err(r,"Echo")
 			self.disconnect_retry()
 
 		d = self.do_echo("ping")
@@ -298,7 +298,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				d.addCallback(lambda r: getattr(self._server,"do_"+name)(self,*a,**k))
 				def log_me(r):
 					if not r.check(NoLink):
-						log.err(r)
+						log.err(r,"Calling "+name)
 					return r
 				d.addErrback(log_me)
 				return d

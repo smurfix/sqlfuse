@@ -22,7 +22,7 @@ from twisted.internet import reactor
 from twisted.internet import error as err
 from twisted.internet.defer import inlineCallbacks
 from twisted.manhole import service
-from twisted.python import log
+from twisted.python import log,failure
 from twisted.python.hashlib import md5
 from twisted.spread import pb
 
@@ -99,7 +99,8 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 		except err.ConnectionRefusedError:
 			raise NoConnection
 		except Exception:
-			log.err()
+			f = failure.Failure()
+			log.err(f,"Connection problem")
 			raise
 		
 	def connected(self, proxy):
@@ -211,7 +212,7 @@ class SqlClientFactory(pb.PBClientFactory,object):
 		d.addCallback(cbsi1)
 		d.addBoth(db.rollback)
 		d.addCallback(cbsi2)
-		d.addErrback(log.err)
+		d.addErrback(lambda r: log.err(r,"Login 2"))
 		return d
 		
 
@@ -304,7 +305,7 @@ class _Login1Wrapper(object,pb.Referenceable):
 			nc = open("/dev/urandom","r").read(63)
 			return (_Login2Wrapper(self,nc),nc, build_response(c,r))
 		d.addCallback(cbsi1)
-		d.addErrback(log.err)
+		d.addErrback(lambda r: log.err(r,"Login 1"))
 		return d
 
 class _ManholeChallenger(pb.Referenceable, pb._JellyableAvatarMixin):
@@ -376,7 +377,7 @@ class _Login2Wrapper(object,pb.Referenceable):
 		d.addBoth(db.rollback)
 		#d.addCallback(cbsj3)
 		d.addCallback(lambda _: self.node)
-		d.addErrback(log.err)
+		d.addErrback(lambda r: log.err(r,"Login 3"))
 		return d
 
 NodeServer = NodeAdapter

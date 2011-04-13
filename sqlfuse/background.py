@@ -12,8 +12,7 @@ from __future__ import division, print_function, absolute_import
 __all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker","InodeCleaner","InodeWriter")
 
 from collections import defaultdict
-import os, sys
-from traceback import print_exc,format_exc
+import sys
 
 from zope.interface import implements
 
@@ -21,7 +20,7 @@ from twisted.application.service import Service,IService
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred, Deferred, DeferredList, DeferredQueue
 from twisted.internet.threads import deferToThread
-from twisted.python import log
+from twisted.python import failure,log
 
 from sqlmix import NoData
 from sqlfuse.fs import BLOCKSIZE,SqlInode,DB_RETRIES
@@ -91,7 +90,7 @@ class BackgroundJob(object,Service):
 				self.trigger()
 			self.workerRunning = None
 			return r
-		self.workerRunning.addErrback(lambda e: e.printTraceback(file=sys.stderr))
+		self.workerRunning.addErrback(lambda e: log.err(e,"Running "+self.__class__.__name__))
 		self.workerRunning.addBoth(done)
 
 	def work(self):
@@ -327,7 +326,9 @@ class NodeCollector(BackgroundJob):
 					r.trap(NoLink)
 					print("Node",k,"found, but no way to connect")
 				d.addErrback(pr)
-				d.addErrback(log.err)
+				def lerr(r):
+					log.err(r,"Problem adding node")
+				d.addErrback(lerr)
 
 				e = Deferred()
 				d.addBoth(lambda r: e.callback(None))
@@ -469,11 +470,12 @@ class CopyWorker(BackgroundJob):
 				if inode.cache is not None:
 					yield inode.cache.get_data(0,inode.size)
 			except Exception as e:
-				reason = format_exc()
+				f = failure.Failure()
+				reason = f.getTraceback()
 				try:
 					yield self.tree.db(lambda db: db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason), DB_RETRIES)
-				except Exception as e:
-					log.err(reason)
+				except Exception as ex:
+					log.err(f,"Problem fetching file")
 			else:
 				@inlineCallbacks
 				def did_fetch(db):

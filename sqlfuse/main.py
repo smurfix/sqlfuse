@@ -20,8 +20,7 @@ The kernel's FUSE reader cannot handle this.
 TODO: It's a protocol. Treat it as such.
 """
 
-import errno, os, stat, sys, traceback
-from traceback import print_exc
+import errno, os, stat, sys
 from twistfuse.filesystem import FileSystem
 from twistfuse.kernel import FUSE_ATOMIC_O_TRUNC,FUSE_ASYNC_READ,FUSE_EXPORT_SUPPORT,FUSE_BIG_WRITES
 from twisted.application.service import MultiService
@@ -326,12 +325,11 @@ class SqlFuse(FileSystem):
 			try:
 				d = self.call_node(dest,name,*a,**k)
 				def pr(r):
-					r.printTraceback(file=sys.stderr)
+					log.err(r,"EachNode %d: %s" % (dest,name))
 					return r
 				d.addErrback(pr)
 				res = yield d
 			except Exception:
-				#print_exc()
 				if e is None:
 					e = sys.exc_info()
 			else:
@@ -411,9 +409,10 @@ class SqlFuse(FileSystem):
 				m = m.NodeServerFactory(self)
 				yield m.connect()
 			except NoLink:
-				print("No link to node")
+				log.err("No link to nodes %s"%(m,))
 			except Exception:
-				traceback.print_exc()
+				f = failure.Failure()
+				log.err(f,"No link to nodes %s"%(m,))
 			else:
 				self.servers.append(m)
 		pass
@@ -425,7 +424,7 @@ class SqlFuse(FileSystem):
 			try:
 				yield s.disconnect()
 			except Exception:
-				traceback.print_exc()
+				log.err(None,"Disconnect")
 		
 	def mount(self,handler,flags):
 		"""\
