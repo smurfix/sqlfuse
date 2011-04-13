@@ -231,3 +231,6 @@ def _bsf(self, fail, requestID):
 	log.msg(fail)
 	self._sendError(fail, requestID)
 pb.Broker._sendFailure = _bsf
+
+def _nop(self): pass
+failure.Failure.cleanFailure = _nop
