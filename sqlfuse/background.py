@@ -312,7 +312,7 @@ class InodeWriter(BackgroundJob):
 
 	def note(self,node):
 		"""Record that this inode's cache state needs to be written."""
-		trace('inoderecord',"will write inode %d",n.nodeid)
+		trace('inoderecord',"will write inode %d",node.nodeid)
 		self.inodes.add(node)
 		self.trigger()
 	
