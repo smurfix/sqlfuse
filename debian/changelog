@@ -1,3 +1,9 @@
+python-sqlfuse (0.5.16-1) unstable; urgency=low
+
+  * Fix shutdown code: immediately run all tasks until complete
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Wed, 13 Apr 2011 17:00:58 +0200
+
 python-sqlfuse (0.5.15-1) unstable; urgency=low
 
   * Add tracing infrastructure

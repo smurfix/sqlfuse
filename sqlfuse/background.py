@@ -40,7 +40,7 @@ class BackgroundJob(object,Service):
 	interval = 1.0
 	workerCall = None # callLater
 	workerDefer = None # Deferred which waits for the worker to end
-	restart = False # if True, start after initializing
+	restart = False # if True, queue after initializing; if >1 start immediately
 
 	def __init__(self,tree):
 		self.tree = tree
@@ -61,14 +61,15 @@ class BackgroundJob(object,Service):
 	def stopService(self):
 		"""Shutdown. Part of IService."""
 		super(BackgroundJob,self).stopService()
-		if self.workerCall:
-			self.workerCall.cancel()
-			self.workerCall = None
+		self.quit()
 		return self.workerDefer
 
 	def trigger(self):
 		"""Tell the worker to do something. Sometime later."""
 		if self.workerCall is None:
+			if not self.running:
+				self.run()
+				return
 			if self.workerDefer is None:
 				trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
 			self.workerCall = reactor.callLater(self.interval,self.run)
@@ -77,10 +78,12 @@ class BackgroundJob(object,Service):
 
 	def quit(self):
 		"""Trigger the worker now (for the last time)."""
-		if self.workerCall is None:
+		if self.workerCall is None and not self.restart:
 			return
 		trace('background',"Quit: Start %s now", self.__class__.__name__)
-		self.workerCall.reset(0)
+		self.workerCall.cancel()
+		self.workerCall = None
+		self.run()
 
 	def run(self, dummy=None):
 		"""Background loop. Started via timer from trigger()."""
@@ -94,7 +97,7 @@ class BackgroundJob(object,Service):
 		self.workerDefer = maybeDeferred(self.work)
 		def done(r):
 			self.workerDefer = None
-			if self.restart and self.running:
+			if self.restart:
 				self.trigger()
 			else:
 				trace('background',"Stopped %s", self.__class__.__name__)
@@ -165,7 +168,8 @@ class InodeCleaner(BackgroundJob):
 
 	@inlineCallbacks
 	def work(self):
-		self.restart = not self.tree.single_node
+		if self.running and not self.tree.single_node:
+			self.restart = True
 
 		@inlineCallbacks
 		def do_work(db):
@@ -225,7 +229,7 @@ class Recorder(BackgroundJob):
 						continue
 					yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=inode.nodeid,node=self.tree.node_id,data=data,event=event )
 				trace('eventrecord',"wrote %d records",len(d))
-				self.restart = True
+				self.restart = True # unconditional. That's OK, we want a SYN afterwards.
 		yield self.tree.db(do_work, DB_RETRIES)
 		
 	def delete(self,inode):
@@ -333,7 +337,8 @@ class NodeCollector(BackgroundJob):
 	@inlineCallbacks
 	def work(self):
 		nodes = set()
-		self.restart = True
+		if self.running:
+			self.restart = True
 		@inlineCallbacks
 		def do_work(db):
 			yield db.DoSelect("select id from node where id != ${node} and root = ${root}",root=self.tree.root_id, node=self.tree.node_id, _empty=1, _callback=nodes.add)
@@ -414,7 +419,8 @@ class UpdateCollector(BackgroundJob):
 	@inlineCallbacks
 	def work(self):
 		nodes = set()
-		self.restart = True
+		if self.running:
+			self.restart = True
 		@inlineCallbacks
 		def do_work(db):
 			seq, = yield db.DoFn("select max(event.id) from event,node where typ='s' and node.root=${root} and node.id=event.node", root=self.tree.root_id)
@@ -565,7 +571,8 @@ class CopyWorker(BackgroundJob):
 			return
 
 		trace('copyrun',"%d items",len(entries))
-		self.restart = True
+		if self.running:
+			self.restart = True
 		self._queue = DeferredQueue()
 		defs = []
 		nworkers = len(entries)//5+1
