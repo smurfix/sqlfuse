@@ -205,7 +205,7 @@ def cleanFailure(self):
 #failure.Failure.throwExceptionIntoGenerator = tig
 	
 # use NameError because the sqlmix.twisted.DbPool._call() will not retry me
-def RemoteError(NameError):
+class RemoteError(NameError):
 	def __init__(self,type,value):
 		self.type = type
 		self.value = value
