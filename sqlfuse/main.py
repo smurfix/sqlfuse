@@ -7,7 +7,7 @@
 ## This file is formatted with tabs.
 ## Do NOT introduce leading spaces.
 
-from __future__ import division, print_function, absolute_import
+from __future__ import division, absolute_import
 
 __all__ = ('SqlFuse',)
 
@@ -25,9 +25,10 @@ from twistfuse.filesystem import FileSystem
 from twistfuse.kernel import FUSE_ATOMIC_O_TRUNC,FUSE_ASYNC_READ,FUSE_EXPORT_SUPPORT,FUSE_BIG_WRITES
 from twisted.application.service import MultiService
 from twisted.internet import reactor
+from twisted.python import log
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
-from sqlfuse import DBVERSION,nowtuple
+from sqlfuse import DBVERSION,nowtuple, trace,tracers
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE,DB_RETRIES
 from sqlfuse.background import RootUpdater,InodeCleaner,Recorder,NodeCollector,InodeWriter,CacheRecorder,UpdateCollector,CopyWorker
 from sqlfuse.node import SqlNode,NoLink,MAX_BLOCK
@@ -307,7 +308,7 @@ class SqlFuse(FileSystem):
 			node = self.topology[dest]
 			rem = self.remote[node]
 		except KeyError:
-			print("NoLink!",dest,name,repr(a),repr(k))
+			trace('error',"NoLink! %s %s %s %s",dest,name,repr(a),repr(k))
 			raise NoLink(dest)
 
 		if dest == node:

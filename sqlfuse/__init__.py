@@ -11,11 +11,23 @@ from __future__ import division, print_function, absolute_import
 
 import twist
 
-__all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION')
+__all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION', 'trace', 'tracers','tracer_info')
 
-import datetime,errno,inspect,os
+import datetime,errno,inspect,os,sys
 
 DBVERSION = "0.5.1"
+
+tracers = set()
+tracer_info = {'*':"everything", 'errors':"brief error messages"}
+def trace(what,s,*a):
+	if what == "":
+		what = "*"
+	elif "*" in tracers:
+		pass
+	elif what not in tracers:
+		return
+	print("%s: %s" % (what, s%a), file=sys.stderr)
+
 
 class Info(object):
 	def _load(self,db):

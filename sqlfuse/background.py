@@ -23,10 +23,13 @@ from twisted.internet.threads import deferToThread
 from twisted.python import failure,log
 
 from sqlmix import NoData
+from sqlfuse import trace,tracer_info
 from sqlfuse.fs import BLOCKSIZE,SqlInode,DB_RETRIES
 from sqlfuse.range import Range
 from sqlfuse.topo import next_hops
 from sqlfuse.node import NoLink
+
+tracer_info['background']="Start/stop of background processing"
 
 class BackgroundJob(object,Service):
 	"""\
@@ -36,8 +39,7 @@ class BackgroundJob(object,Service):
 	implements(IService)
 	interval = 1.0
 	workerCall = None # callLater
-	workerRunning = None # Deferred which waits for the worker to end
-	workerRestarted = None # Flag whether a worker restart is queued
+	workerDefer = None # Deferred which waits for the worker to end
 	restart = False # if True, start after initializing
 
 	def __init__(self,tree):
@@ -45,12 +47,15 @@ class BackgroundJob(object,Service):
 		self.setName(self.__class__.__name__)
 		self.interval += 5*tree.slow
 		if self.restart:
-			self.trigger()
+			if self.restart > 1:
+				self.run()
+			else:
+				self.trigger()
 
 	def startService(self):
 		"""Startup. Part of IService."""
 		super(BackgroundJob,self).startService()
-		if self.restart:
+		if self.restart and not self.workerCall:
 			self.run()
 
 	def stopService(self):
@@ -59,11 +64,13 @@ class BackgroundJob(object,Service):
 		if self.workerCall:
 			self.workerCall.cancel()
 			self.workerCall = None
-		return self.workerRunning
+		return self.workerDefer
 
 	def trigger(self):
 		"""Tell the worker to do something. Sometime later."""
 		if self.workerCall is None:
+			if self.workerDefer is None:
+				trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
 			self.workerCall = reactor.callLater(self.interval,self.run)
 		else:
 			self.restart = True
@@ -72,31 +79,34 @@ class BackgroundJob(object,Service):
 		"""Trigger the worker now (for the last time)."""
 		if self.workerCall is None:
 			return
+		trace('background',"Quit: Start %s now", self.__class__.__name__)
 		self.workerCall.reset(0)
 
 	def run(self, dummy=None):
-		"""Background loop."""
+		"""Background loop. Started via timer from trigger()."""
 
 		self.workerCall = None
-		self.restart = False
-		if self.workerRunning:
-			if not self.workerRestarted:
-				self.workerRestarted = True
-				self.workerRunning.addBoth(self.run)
+		if self.workerDefer:
+			self.restart = True
 			return
-		self.workerRunning = maybeDeferred(self.work)
+		self.restart = False
+		trace('background',"Starting %s", self.__class__.__name__)
+		self.workerDefer = maybeDeferred(self.work)
 		def done(r):
+			self.workerDefer = None
 			if self.restart and self.running:
 				self.trigger()
-			self.workerRunning = None
-			return r
-		self.workerRunning.addErrback(lambda e: log.err(e,"Running "+self.__class__.__name__))
-		self.workerRunning.addBoth(done)
+			else:
+				trace('background',"Stopped %s", self.__class__.__name__)
+		self.workerDefer.addErrback(lambda e: log.err(e,"Running "+self.__class__.__name__))
+		self.workerDefer.addBoth(done)
 
 	def work(self):
 		"""Override this."""
 		raise NotImplementedError("You need to override %s.work" % (self.__class__.__name__))
 
+
+tracer_info['rootup']="BG: Log updates to node size info"
 
 class RootUpdater(BackgroundJob):
 	"""I update my root statistics (number of inodes and blocks) periodically, if necessary"""
@@ -108,11 +118,13 @@ class RootUpdater(BackgroundJob):
 
 	def d_inode(self,delta):
 		"""The number of my inodes changed."""
+		trace('rootup',"#Inodes: %d", delta)
 		self.delta_inode += delta
 		self.trigger()
 
 	def d_dir(self,delta):
 		"""The number of directory inodes changed."""
+		trace('rootup',"#Dirs: %d", delta)
 		self.delta_dir += delta
 		self.trigger()
 
@@ -120,8 +132,10 @@ class RootUpdater(BackgroundJob):
 		"""A file size changed."""
 		old = (old+BLOCKSIZE-1)//BLOCKSIZE
 		new = (new+BLOCKSIZE-1)//BLOCKSIZE
-		if old == new: return
-		self.delta_block += new-old
+		delta = new-old
+		if not delta: return
+		trace('rootup',"#Size: %d", delta)
+		self.delta_block += delta
 		self.trigger()
 
 	@inlineCallbacks
@@ -131,9 +145,12 @@ class RootUpdater(BackgroundJob):
 		d_dir = self.delta_dir; self.delta_dir = 0
 		d_block = self.delta_block; self.delta_block = 0
 		if d_inode or d_block or d_dir:
+			trace('rootup',"sync i%d b%d d%d", d_inode, d_block, d_dir)
 			yield self.tree.db(lambda db: db.Do("update root set nfiles=nfiles+${inodes}, nblocks=nblocks+${blocks}, ndirs=ndirs+${dirs}", root=self.tree.root_id, inodes=d_inode, blocks=d_block, dirs=d_dir), DB_RETRIES)
 		returnValue( None )
 
+
+tracer_info['inodeclean'] = "BG: delete no-longer-used inodes"
 
 class InodeCleaner(BackgroundJob):
 	"""\
@@ -160,12 +177,14 @@ class InodeCleaner(BackgroundJob):
 			else:
 				if not n_nodes:
 					return
+				trace('inodeclean',"%d nodes",n_nodes)
 				try:
 					last_syn, = yield db.DoFn("select id from event where node=${node} and typ = 's' and id <= ${evt} order by id desc limit 1", node=self.tree.node_id, evt=all_done)
 				except NoData:
 					pass
 				else:
 					# remove old inode entries
+					trace('inodeclean',"upto %d",last_syn)
 
 					yield db.DoSelect("select inode from event where node=${node} and typ = 'd' and id < ${id}", id=last_syn, node=self.tree.node_id, _callback=inums.append, _empty=True)
 					yield db.Do("delete from event where node=${node} and id < ${id}", id=last_syn, node=self.tree.node_id, _empty=True)
@@ -174,8 +193,11 @@ class InodeCleaner(BackgroundJob):
 
 		# more deadlock prevention
 		if inums:
+			trace('inodeclean',"%d inodes",len(inums))
 			yield self.tree.db(lambda db: db.Do("delete from inode where id in (%s)" % ",".join((str(x) for x in inums)), _empty=True), DB_RETRIES)
 
+
+tracer_info['eventrecord'] = "BG: write event records"
 
 class Recorder(BackgroundJob):
 	"""\
@@ -195,35 +217,43 @@ class Recorder(BackgroundJob):
 		@inlineCallbacks
 		def do_work(db):
 			if not d:
-				yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=self.tree.inum,node=self.tree.node_id,data=None,event='s' )
+				s = yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=self.tree.inum,node=self.tree.node_id,data=None,event='s' )
+				trace('eventrecord',"write SYN %d",s)
 			else:
 				for event,inode,data in d:
 					if not inode.nodeid:
 						continue
 					yield db.Do("insert into `event`(`inode`,`node`,`typ`,`range`) values(${inode},${node},${event},${data})", inode=inode.nodeid,node=self.tree.node_id,data=data,event=event )
+				trace('eventrecord',"wrote %d records",len(d))
 				self.restart = True
 		yield self.tree.db(do_work, DB_RETRIES)
 		
 	def delete(self,inode):
 		"""Record inode deletion"""
+		trace('eventrecord',"delete inode %d",inode.nodeid)
 		self.data.append(('d',inode,None))
 		self.trigger()
 	
 	def new(self,inode):
 		"""Record inode creation"""
+		trace('eventrecord',"create inode %d",inode.nodeid)
 		self.data.append(('n',inode,None))
 		self.trigger()
 
 	def change(self,inode,data):
 		"""Record changed data"""
+		trace('eventrecord',"update inode %d: %s",inode.nodeid,data)
 		self.data.append(('c',inode,data))
 		self.trigger()
 
 	def finish_write(self,inode):
 		"""Record finished changing data, i.e. close-file"""
+		trace('eventrecord',"finish inode %d",inode.nodeid)
 		self.data.append(('f',inode,None))
 		self.trigger()
 
+
+tracer_info['cacherecord'] = "BG: write cache state records"
 
 class CacheRecorder(BackgroundJob):
 	"""\
@@ -243,16 +273,21 @@ class CacheRecorder(BackgroundJob):
 				if n.nodeid is None:
 					return
 				if n.cache_id is None:
+					trace('cacherecord',"new for inode %d",n.nodeid)
 					n.cache_id = yield db.Do("insert into cache(cached,inode,node) values (${data},${inode},${node})", inode=n.nodeid, node=self.tree.node_id, data=n.known.encode())
 				else:
+					trace('cacherecord',"old for inode %d",n.nodeid)
 					yield db.Do("update cache set cached=${data} where id=${cache}", cache=n.cache_id, data=n.known.encode(), _empty=True)
 		return self.tree.db(lambda db: do_work(db), DB_RETRIES)
 
 	def note(self,node):
 		"""Record that this inode's cache state needs to be written."""
+		trace('cacherecord',"update inode %d",node.nodeid)
 		self.caches.add(node)
 		self.trigger()
 	
+
+tracer_info['inoderecord'] = "BG: write inode metadata updates"
 
 class InodeWriter(BackgroundJob):
 	"""\
@@ -271,14 +306,18 @@ class InodeWriter(BackgroundJob):
 			for n in nn:
 				if n.nodeid is None:
 					return
+				trace('inoderecord',"do write inode %d",n.nodeid)
 				yield n._save(db)
 		return self.tree.db(lambda db: do_work(db), DB_RETRIES)
 
 	def note(self,node):
 		"""Record that this inode's cache state needs to be written."""
+		trace('inoderecord',"will write inode %d",n.nodeid)
 		self.inodes.add(node)
 		self.trigger()
 	
+
+tracer_info['nodecollect'] = "BG: collect other nodes and update internal state"
 
 class NodeCollector(BackgroundJob):
 	"""\
@@ -286,7 +325,7 @@ class NodeCollector(BackgroundJob):
 		and update my local state.
 		"""
 	interval = 60
-	restart = True
+	restart = 2 # immediate
 	def __init__(self,tree):
 		self.interval += 90*tree.slow
 		super(NodeCollector,self).__init__(tree)
@@ -299,20 +338,24 @@ class NodeCollector(BackgroundJob):
 		def do_work(db):
 			yield db.DoSelect("select id from node where id != ${node} and root = ${root}",root=self.tree.root_id, node=self.tree.node_id, _empty=1, _callback=nodes.add)
 			if not nodes:
+				trace('nodecollect',"No other nodes: shutting down collector")
 				self.tree.single_node = True
 				return
 			self.tree.single_node = False
+			trace('nodecollect',"%d other nodes",len(nodes))
 
 			# TODO: create a topology map
 			## now create a topology map: how do I reach X from here?
 			topo = yield self.get_paths(db)
 			topo = next_hops(topo, self.tree.node_id)
+			trace('nodecollect',"topology %s",repr(topo))
 			returnValue( topo )
 		topo = yield self.tree.db(do_work, DB_RETRIES)
 
 		# drop obsolete nodes
 		for k in self.tree.remote.keys():
 			if k not in nodes:
+				trace('nodecollect',"drop node %s",k)
 				del self.tree.remote[k]
 
 		#self.tree.topology = topo
@@ -321,10 +364,11 @@ class NodeCollector(BackgroundJob):
 		# add new nodes
 		for k in nodes:
 			if k not in self.tree.remote:
+				trace('nodecollect',"add node %s",k)
 				d = self.tree.remote[k].connect_retry() # yes, this works, .remote auto-extends
 				def pr(r):
 					r.trap(NoLink)
-					print("Node",k,"found, but no way to connect")
+					trace('error',"Node %s found, but no way to connect",k)
 				d.addErrback(pr)
 				def lerr(r):
 					log.err(r,"Problem adding node")
@@ -351,6 +395,8 @@ class NodeCollector(BackgroundJob):
 		returnValue( ways )
 
 
+tracer_info['eventcollect'] = "BG: collect events from other nodes and write TODO records"
+
 class UpdateCollector(BackgroundJob):
 	"""\
 		Periodically read the list of changes, and update the list of
@@ -375,6 +421,7 @@ class UpdateCollector(BackgroundJob):
 			last,do_copy = yield db.DoFn("select event,autocopy from node where id=${node}", node=self.tree.node_id)
 			if seq == last:
 				return
+			trace('eventcollect',"Events from %d to %d",last+1,seq)
 			it = yield db.DoSelect("select event.id,event.inode,event.node,event.typ,event.range from event,node,inode where inode.id=event.inode and inode.typ='f' and event.id>${min} and event.id<=${max} and node.id=event.node and node.id != ${node} and node.root=${root} order by event.inode,event.id desc", root=self.tree.root_id, node=self.tree.node_id, min=last,max=seq, _empty=True)
 
 			inode = None
@@ -393,6 +440,7 @@ class UpdateCollector(BackgroundJob):
 				self.tree.changer.note(inode.cache)
 				# TODO only do this if we don't just cache
 				if do_copy:
+					trace('eventcollect',"TODO: inode %d",inode.nodeid)
 					yield db.Do("replace into todo(node,inode,typ) values(${node},${inode},'f')", inode=inode.nodeid, node=self.tree.node_id, _empty=True)
 					self.tree.copier.trigger()
 				yield inode.cache._close()
@@ -443,6 +491,8 @@ class UpdateCollector(BackgroundJob):
 #				t.breaker = True
 			
 	
+tracer_info['copyrun'] = "BG: examine TODO records and copy files"
+
 class CopyWorker(BackgroundJob):
 	"""\
 		Periodically read the TODO list and fetch the files mentioned there.
@@ -467,16 +517,19 @@ class CopyWorker(BackgroundJob):
 			id,inode = i
 
 			try:
+				trace('copyrun',"Start copying %d: %s",inode.nodeid,repr(inode.cache))
 				if inode.cache is not None:
 					yield inode.cache.get_data(0,inode.size)
 			except Exception as e:
 				f = failure.Failure()
+				trace('copyrun',"Failure copying %d: %s",inode.nodeid,f)
 				reason = f.getTraceback()
 				try:
 					yield self.tree.db(lambda db: db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason), DB_RETRIES)
 				except Exception as ex:
 					log.err(f,"Problem fetching file")
 			else:
+				trace('copyrun',"Copied %d: %s",inode.nodeid,repr(inode.cache))
 				@inlineCallbacks
 				def did_fetch(db):
 					yield db.Do("delete from todo where id=${id}", id=id)
@@ -495,6 +548,9 @@ class CopyWorker(BackgroundJob):
 			f=""
 			if self.last_entry:
 				f = " and id > ${last}"
+				trace('copyrun',"start TODO from %d",self.last_entry+1)
+			else:
+				trace('copyrun',"start TODO")
 
 			entries = []
 			def app(*a):
@@ -504,9 +560,11 @@ class CopyWorker(BackgroundJob):
 
 		entries = yield self.tree.db(do_work, DB_RETRIES)
 		if not entries:
+			trace('copyrun',"no more items")
 			self.last_entry = None
 			return
 
+		trace('copyrun',"%d items",len(entries))
 		self.restart = True
 		self._queue = DeferredQueue()
 		defs = []
@@ -533,6 +591,7 @@ class CopyWorker(BackgroundJob):
 		for i in range(nworkers):
 			self._queue.put(None)
 		yield DeferredList(defs)
+		trace('copyrun',"done until %d",self.last_entry)
 		self._queue = None
 
 		

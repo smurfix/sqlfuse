@@ -246,8 +246,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	@inlineCallbacks
 	def remote_readfile(self,caller,inum,reader,missing):
 		node = SqlInode(self.filesystem,inum)
-		with self.filesystem.db() as db:
-			yield node._load(db)
+		yield self.filesystem.db(node._load, DB_RETRIES)
 		if not node.nodeid:
 			print("Inode probably deleted",inum)
 			raise DataMissing(missing)

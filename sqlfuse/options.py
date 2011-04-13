@@ -123,6 +123,7 @@ def options(mode=None,args=None):
 	opt("diratime", dest="diratime", choices=('no','read','access'), default=None,
 		help="directory atime options")
 	opt("slow", dest="slow", action='store_true', help="delay more in background processing")
+	opt("debug", dest="debug", action='store', default="", help="Debugging flags; use =help to list")
 
 	if mode == "mode":
 		A = p.add_subparsers(title='subcommands', help='main command modes')
