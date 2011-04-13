@@ -703,41 +703,46 @@ class SqlInode(Inode):
 		self.inuse = 0
 		self.changes = Range()
 		self.cache = NotKnown
+		self.load_lock = DeferredLock()
 		# defer anything we only need when loaded to after _load is called
 
 	@inlineCallbacks
 	def _load(self, db):
 		"""Load attributes from storage"""
-		if not self.nodeid:
-			# probably deleted
-			return
+		yield self.load_lock.acquire()
+		try:
+			if not self.nodeid:
+				# probably deleted
+				return
 
-		if self.seq:
-			yield self._save(db)
+			if self.seq:
+				yield self._save(db)
 
-		d = yield db.DoFn("select * from inode where id=${inode}", inode=self.nodeid, _dict=1)
-		if self.seq is not None and self.seq == d["seq"]:
-			returnValue( None )
+			d = yield db.DoFn("select * from inode where id=${inode}", inode=self.nodeid, _dict=1)
+			if self.seq is not None and self.seq == d["seq"]:
+				returnValue( None )
 
-		self.attrs = {}
-		self.updated = set()
+			self.attrs = {}
+			self.updated = set()
 
-		for k in inode_xattrs:
-			if k.endswith("time"):
-				v = (d[k],d[k+"_ns"])
-			else:
-				v = d[k]
-			self.attrs[k] = v
-		self.seq = d["seq"]
-		self.size = d["size"]
-		self.old_size = d["size"]
-		self.timestamp = nowtuple()
+			for k in inode_xattrs:
+				if k.endswith("time"):
+					v = (d[k],d[k+"_ns"])
+				else:
+					v = d[k]
+				self.attrs[k] = v
+			self.seq = d["seq"]
+			self.size = d["size"]
+			self.old_size = d["size"]
+			self.timestamp = nowtuple()
 
-		if self.cache is NotKnown:
-			self.cache = None
-			if self.typ == 'f':
-				self.cache = Cache(self.filesystem,self)
-				yield self.cache._load(db)
+			if self.cache is NotKnown:
+				self.cache = None
+				if self.typ == 'f':
+					self.cache = Cache(self.filesystem,self)
+					yield self.cache._load(db)
+		finally:
+			self.load_lock.release()
 		returnValue( None )
 	
 	def __getitem__(self,key):
