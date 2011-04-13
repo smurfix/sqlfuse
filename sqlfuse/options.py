@@ -124,6 +124,8 @@ def options(mode=None,args=None):
 		help="directory atime options")
 	opt("slow", dest="slow", action='store_true', help="delay more in background processing")
 	opt("debug", dest="debug", action='store', default="", help="Debugging flags; use =help to list")
+	opt("profile", dest="profile", action='store', default=None,
+		help="Write Python profiling information to a file")
 
 	if mode == "mode":
 		A = p.add_subparsers(title='subcommands', help='main command modes')

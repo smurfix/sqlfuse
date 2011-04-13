@@ -211,6 +211,16 @@ def main():
 	"""Main program."""
 	
 	opt=options("mode")
+	if opt.profile:
+		try:
+			import cProfile as profile
+		except Exception:
+			import profile
+		profile.run("_main()",opt.profile)
+	else:
+		_main(opt)
+
+def _main(opt):
 	db = Db(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
 
 	info=Info(db)
