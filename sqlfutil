@@ -107,7 +107,7 @@ def root_info(db,root_id):
 def inode_info(db,inum):
 	yield ("inode","ID",inum)
 	d = db.DoFn("select * from inode where id=${id}",id=inum, _dict=1)
-	for f in "uid gid mtime atime ctime size event copies seq typ".split():
+	for f in "uid gid mtime atime ctime size event seq typ".split():
 		v = d[f]
 		if f == "typ":
 			v = filetyp[v]
@@ -143,8 +143,6 @@ def inode_info(db,inum):
 
 	for i,n in db.DoSelect("select parent,name from tree where inode=${inode}", inode=inum, _empty=1):
 		yield("parent",i,repr(n.encode("utf-8")))
-	for p, in db.DoSelect("select id from progress where inode=${inode}", inode=inum, _empty=1):
-		yield("progress",p)
 
 def event_info(db,event_id):
 	yield ("event","ID",event_id)
