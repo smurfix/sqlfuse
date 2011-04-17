@@ -11,17 +11,24 @@ from __future__ import division, print_function, absolute_import
 
 import twist
 
-__all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION', 'trace', 'tracers','tracer_info')
+__all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION', 'trace', 'tracers','tracer_info', 'ManholeEnv')
 
 import datetime,errno,inspect,os,sys
 
 DBVERSION = "0.5.1"
 
+ManholeEnv = {}
+
 tracers = set()
-tracer_info = {'*':"everything", 'errors':"brief error messages"}
+tracer_info = {'*':"everything", 'error':"brief error messages"}
+tracers.add('error')
+
 def trace(what,s,*a):
 	if what == "":
 		what = "*"
+	elif what not in tracer_info:
+		print("Not a debugging key: '%s'" % (what,), file=sys.stderr)
+		return
 	elif "*" in tracers:
 		pass
 	elif what not in tracers:

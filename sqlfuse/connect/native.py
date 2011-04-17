@@ -20,7 +20,7 @@ from zope.interface import implements
 from twisted.cred import portal, checkers, credentials, error
 from twisted.internet import reactor
 from twisted.internet import error as err
-from twisted.internet.defer import inlineCallbacks
+from twisted.internet.defer import inlineCallbacks,returnValue
 from twisted.manhole import service
 from twisted.python import log,failure
 from twisted.python.hashlib import md5
@@ -28,6 +28,8 @@ from twisted.spread import pb
 
 from sqlfuse.connect import INodeClient,INodeServer,INodeServerFactory
 from sqlfuse.node import SqlNode,NoConnection
+from sqlfuse.fs import DB_RETRIES
+from sqlfuse import ManholeEnv
 
 class InvalidResponse(error.UnauthorizedLogin):
 	"""You didn't provide the correct response to the challenge."""
@@ -80,7 +82,8 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 			"""
 		try:
 			fs = self.node.filesystem
-			with fs.db() as db:
+			@inlineCallbacks
+			def do_connect(db):
 				conn, = yield db.DoFn("select args from updater where src=${src} and dest=${dest} and method='native'",src=fs.node_id,dest=self.node.node_id)
 				conn = eval(conn)
 				if len(conn) > 1:
@@ -88,7 +91,8 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 				else:
 					port, = yield db.DoFn("select port from node where id=${node}", node=self.node.node_id)
 					assert port > 0
-			adr = conn[0]
+				returnValue( (conn[0],port) )
+			adr,port = yield fs.db(do_connect, DB_RETRIES)
 			factory = SqlClientFactory(self,fs)
 			self._connector = reactor.connectTCP(adr,port, factory)
 			res = yield factory.login(NodeCredentials(fs.db, fs.node_id,self.node.node_id))
@@ -410,10 +414,10 @@ class NodeServerFactory(object):
 		from sqlfuse import fs
 		ns["fs"] = self.filesystem
 		ns["inodes"] = fs._Inode
+		ns.update(ManholeEnv)
 
 		user="admin"
-		with self.filesystem.db() as db:
-			password,= yield db.DoFn("select `password` from node where id=${node}", node=self.filesystem.node_id)
+		password,= yield self.filesystem.db(lambda db: db.DoFn("select `password` from node where id=${node}", node=self.filesystem.node_id), DB_RETRIES)
 		if password:
 			mp = portal.Portal( service.Realm(service.Service(True,ns)),
 			    [checkers.InMemoryUsernamePasswordDatabaseDontUse(**{user: password})])
