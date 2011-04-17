@@ -7,7 +7,7 @@
 ## This file is formatted with tabs.
 ## Do NOT introduce leading spaces.
 
-from __future__ import division, print_function, absolute_import
+from __future__ import division, absolute_import
 
 __all__ = ("SqlInode",)
 
@@ -26,7 +26,8 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 from twisted.internet.threads import deferToThread
 from twisted.spread import pb
 
-from sqlfuse import nowtuple,log_call,flag2mode
+from sqlfuse import nowtuple,log_call,flag2mode, trace,tracer_info
+
 from sqlfuse.range import Range
 from sqlmix.twisted import NoData
 
@@ -50,6 +51,8 @@ mode_type[stat.S_IFIFO]  =  1 # DT_FIFO
 mode_type[stat.S_IFLNK]  = 10 # DT_LNK
 mode_type[stat.S_IFREG]  =  8 # DT_REG
 mode_type[stat.S_IFSOCK] = 12 # DT_SOCK
+
+tracer_info['fs']="file system details"
 
 class NotKnown:
 	pass
@@ -800,11 +803,11 @@ class SqlInode(Inode):
 					seq,self.size = yield db.DoFn("select seq,size from inode where id=${inode}", inode=self.nodeid)
 				except NoData:
 					# deleted inode
-					print("!!! inode_deleted",self.nodeid,self.seq,self.updated)
+					trace('fs',"!!! inode_deleted %d %d %s",self.nodeid,self.seq,self.updated)
 					self.nodeid = None
 				else:
 					# warn
-					print("!!! inode_changed",self.nodeid,self.seq,seq,new_seq,repr(args))
+					trace('fs',"!!! inode_changed %d %d %d %s",self.nodeid,self.seq,seq,new_seq,repr(args))
 					if new_seq:
 						assert new_seq == seq+1
 					else:

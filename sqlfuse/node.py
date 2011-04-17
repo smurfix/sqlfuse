@@ -7,7 +7,7 @@
 ## This file is formatted with tabs.
 ## Do NOT introduce leading spaces.
 
-from __future__ import division, print_function, absolute_import
+from __future__ import division, absolute_import
 
 """\
 This module exports a SqlNode, i.e. an object which represents another
@@ -29,6 +29,7 @@ from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks,Deferred
 from twisted.internet import error as err
 
+from sqlfuse import trace,tracer_info
 from sqlfuse.connect import INode
 from sqlfuse.fs import SqlInode,DB_RETRIES
 from sqlmix import NoData
@@ -38,6 +39,8 @@ MAX_RETRY=60
 MAX_BLOCK=65536
 ECHO_TIMER=1
 ECHO_TIMEOUT=10
+
+tracer_info['remote']="Interaction between nodes"
 
 class NoConnection(RuntimeError):
 	"""\
@@ -82,7 +85,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		d = self.connect()
 		def grab_nolink(r):
 			r.trap(NoLink)
-			print("There is no way to connect to node",self.node_id)
+			trace('remote',"There is no way to connect to node %d",self.node_id)
 		d.addErrback(grab_nolink)
 		d.addErrback(lambda r: log.err(r,"Connection timer"))
 
@@ -136,7 +139,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			raise
 		except Exception as e: # no connection
 			if isinstance(e,(err.ConnectionRefusedError,NoConnection)):
-				print("No link to %d, retrying"%(self.node_id,))
+				trace('remote',"No link to %d, retrying",self.node_id)
 			else:
 				f = failure.Failure()
 				log.err(f,"Connecting remote")
@@ -157,7 +160,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	def server_no_echo(self):
 		self.echo_timer = None
 		self.disconnect_retry()
-		print("Echo timeout",)
+		trace('remote',"Echo timeout")
 
 	def server_echo(self):
 		self.echo_timer = reactor.callLater(ECHO_TIMEOUT,self.server_no_echo)
@@ -181,7 +184,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	def server_connected(self, server):
 		if self._server is not None and self._server is not server:
 			self._server.disconnect()
-		print("Connected server to",self.node_id)
+		trace('remote',"Connected server to %d",self.node_id)
 		self._server = server
 		self.retry_timeout = INITIAL_RETRY
 
@@ -195,19 +198,19 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			if self.echo_timer is not None:
 				self.echo_timer.cancel()
 				self.echo_timer = None
-			print("Disconnected server to",self.node_id)
+			trace('remote',"Disconnected server to %d",self.node_id)
 			if self.node_id is not None:
 				self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
 
 	def client_connected(self, client):
-		print("Connected client to",self.node_id)
+		trace('remote',"Connected client to %d",self.node_id)
 		self._clients.add(client)
 
 	def client_disconnected(self, client):
 		try: self._clients.remove(client)
 		except (ValueError,KeyError): pass
 		else:
-			print("Disconnected client to",self.node_id)
+			trace('remote',"Disconnected client to",self.node_id)
 
 
 	def disconnect(self):
@@ -236,7 +239,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	
 	def remote_exec(self,caller,name,node,*a,**k):
 		if node not in self.filesystem.topology:
-			print("NoLink remote",caller,node,name,repr(a),repr(k))
+			trace('remote',"NoLink remote %s %s %s %s %s",caller,node,name,repr(a),repr(k))
 			raise NoLink(node)
 
 		# TODO: cache calls to stuff like reading from a file
@@ -248,7 +251,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		node = SqlInode(self.filesystem,inum)
 		yield self.filesystem.db(node._load, DB_RETRIES)
 		if not node.nodeid:
-			print("Inode probably deleted",inum)
+			trace('remote',"Inode %d probably deleted",inum)
 			raise DataMissing(missing)
 
 		avail = node.cache.available & missing
@@ -273,7 +276,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 					break
 			h.release()
 		if missing:
-			print("Missing: %s for %s / %s" % (missing,caller,reader))
+			trace('remote',"Missing: %s for %s / %s", missing,caller,reader)
 			raise DataMissing(missing)
 		
 	
