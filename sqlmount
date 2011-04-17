@@ -106,7 +106,7 @@ Turn off flags with a prepended '!'. Separate multiple flags with comma.
 		signal(SIGUSR1,pen)
 		signal(SIGUSR2,pdis)
 		ManholeEnv['prof_start'] = pen
-		ManholeEnv['prof_stop'] = pen
+		ManholeEnv['prof_stop'] = pdis
 		ManholeEnv['profiler'] = p
 
 		p.runcall(reactor.run)
