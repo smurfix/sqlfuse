@@ -14,6 +14,10 @@ import twist
 __all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION', 'trace', 'tracers','tracer_info', 'ManholeEnv')
 
 import datetime,errno,inspect,os,sys
+from threading import Lock
+
+from twisted.internet import reactor,threads
+from twisted.python import log
 
 DBVERSION = "0.5.1"
 
@@ -82,3 +86,56 @@ def flag2mode(flags):
 	return mode
 
 
+tracer_info['thread'] = "Log thread start/stop"
+# hack callInThread to log what it's doing
+_syn = Lock()
+_cic = reactor.callInThread
+_thr = {}
+_thr_id = 0
+def _tcall(tid,p,a,k):
+	_thr[tid] = (p,a,k)
+	try:
+		return p(*a,**k)
+	finally:
+		with _syn:
+			del _thr[tid]
+			trace('thread',"-THR %s %s",tid," ".join(str(x) for x in _thr.keys()))
+def cic(p,*a,**k):
+	global _thr_id
+	with _syn:
+		_thr_id += 1
+		tid = _thr_id
+	trace('thread',"+THR %s %s %s %s",tid,p,a,k)
+	return _cic(_tcall,tid,p,a,k)
+reactor.callInThread = cic
+
+_dt = threads.deferToThreadPool
+def deferToThreadPool(reactor, threadpool, f, *args, **kwargs):
+	trace('thread',"+THR %s %s<%d> <%d>",f,repr(args[0]) if args else "-", len(args),len(kwargs))
+	d = _dt(reactor, threadpool, f, *args, **kwargs)
+	def eth(r):
+		if isinstance(r,basestring) and len(r) > 100:
+			e = "str<%d>"%(len(r),)
+		else:
+			e = repr(r)
+		trace('thread',"-THR %s %s<%d> <%d>: %s",f,repr(args[0]) if args else "-", len(args),len(kwargs),e)
+		return r
+	d.addBoth(eth)
+	return d
+threads.deferToThreadPool = deferToThreadPool
+
+
+
+"""Default observer, but actually logs the "why" info."""
+def _emit(eventDict):
+	if eventDict["isError"]:
+		if 'failure' in eventDict:
+			text = eventDict['failure'].getTraceback()
+		else:
+			text = " ".join([str(m) for m in eventDict["message"]]) + "\n"
+		if 'why' in eventDict:
+			text = eventDict['why']+': '+text
+		sys.stderr.write(text)
+		sys.stderr.flush()
+
+log.startLoggingWithObserver(_emit,False)
