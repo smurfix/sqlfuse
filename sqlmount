@@ -51,14 +51,15 @@ Debug flags:
 				print(s + " "*(2+w-len(s)) + t)
 			print >>sys.stderr,"""\
 
-Turn off flags with a prepended '!'. Separate multiple flags with comma.
+Turn off flags with a prepended '-'. Separate multiple flags with slashes ('/').
 """
+			# TODO: use debug=foo+bar-baz-quux instead.
 			sys.exit(1)
-		for s in opt.debug.split(","):
-			if (s[1:] if s.startswith('!') else s) not in tracer_info:
+		for s in opt.debug.split("/"):
+			if (s[1:] if s.startswith('-') else s) not in tracer_info:
 				print >>sys.stderr,"%s: '%s': unknown debug option.\nTo print a list: debug=help." % (sys.argv[0],s)
 				sys.exit(1)
-			if s.startswith("!"):
+			if s.startswith("-"):
 				tracers.discard(s[1:])
 			else:
 				tracers.add(s)
