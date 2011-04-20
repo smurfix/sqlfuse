@@ -298,9 +298,20 @@ class SqlInode(Inode):
 #		'cache',         # Range of bytes read from remote nodes
 #		'inuse',         # open files on this inode? <0:delete after close
 #		'write_timer',   # attribute write timer
+#		'last_access',   # cleanup timer
 #		]
 
 	# ___ FUSE methods ___
+
+	def getnode(self,nodeid):
+		inode = super(SqlInode,self).getnode(nodeid)
+		if inode.last_access:
+			inode.last_access.cancel()
+		inode.last_access = reactor.callLater(self.filesystem.ENTRY_VALID,self._drop)
+
+	def _drop(self):
+		inode.last_access = None
+		del self.filesystem.nodes[self.nodeid]
 
 	def getattr(self):
 		@inlineCallbacks
@@ -552,6 +563,7 @@ class SqlInode(Inode):
 			self.filesystem.record.delete(self)
 
 		yield deferToThread(self._os_unlink)
+		del self.filesystem.nodes[self.nodeid]
 		self.nodeid = None
 		returnValue( None )
 
@@ -804,6 +816,7 @@ class SqlInode(Inode):
 				except NoData:
 					# deleted inode
 					trace('fs',"!!! inode_deleted %d %d %s",self.nodeid,self.seq,self.updated)
+					del self.filesystem.nodes[self.nodeid]
 					self.nodeid = None
 				else:
 					# warn
