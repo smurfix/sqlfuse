@@ -326,7 +326,7 @@ class SqlFuse(FileSystem):
 			try:
 				d = self.call_node(dest,name,*a,**k)
 				def pr(r):
-					log.err(r,"EachNode %d: %s" % (dest,name))
+					log.err(repr(r),"EachNode %d: %s" % (dest,name))
 					return r
 				d.addErrback(pr)
 				res = yield d
@@ -410,7 +410,7 @@ class SqlFuse(FileSystem):
 				m = m.NodeServerFactory(self)
 				yield m.connect()
 			except NoLink:
-				log.err("No link to nodes %s"%(m,))
+				log.err(None,"No link to nodes %s"%(m,))
 			except Exception:
 				f = failure.Failure()
 				log.err(f,"No link to nodes %s"%(m,))
