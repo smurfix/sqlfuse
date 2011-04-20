@@ -126,30 +126,6 @@ def acb(self, result):
 defer.Deferred.callback = acb
 
 
-# hack callInThread to log what it's doing
-if False:
-	from threading import Lock
-	_syn = Lock()
-	_cic = reactor.callInThread
-	_thr = {}
-	_thr_id = 0
-	def _tcall(tid,p,a,k):
-		_thr[tid] = (p,a,k)
-		try:
-			return p(*a,**k)
-		finally:
-			with _syn:
-				del _thr[tid]
-				print >>sys.stderr,"-THR",tid," ".join(str(x) for x in _thr.keys())
-	def cic(p,*a,**k):
-		with _syn:
-			_thr_id += 1
-			tid = _thr_id
-		print >>sys.stderr,"+THR",tid,p,a,k
-		return _cic(_tcall,tid,p,a,k)
-	reactor.callInThread = cic
-
-
 # Always encode Unicode strings in utf-8
 fhw = FileDescriptor.write
 def nfhw(self,data):
