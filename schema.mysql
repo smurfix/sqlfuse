@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.5.1');
+insert into info(name,value) values('version','0.5.2');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -215,11 +215,14 @@ DROP TABLE IF EXISTS `todo`;
 CREATE TABLE `todo` (
   `id` bigint(20) unsigned NOT NULL auto_increment,
   `node` int(10) unsigned NOT NULL, -- my ID
+  `missing` int(10) unsigned NULL default NULL, -- wait for reachability
   `inode` bigint(20) unsigned NOT NULL, -- the data I'm copying
   `typ` char character set ascii, -- 'f'ilesync, 'd'elete
   PRIMARY KEY (`id`),
   KEY `fk_todo_inode` (`inode`),
   UNIQUE KEY `fk_todo_nodei` (`node`,`inode`),
+  KEY `fk_todo_missing` (`missing`),
+  constraint `fk_todo_missing` foreign key(`missing`) references `node`(`id`) on delete cascade,
   constraint `fk_todo_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade,
   constraint `fk_todo_node` foreign key(`node`) references `node`(`id`) on delete cascade
 ) DEFAULT CHARSET=utf8;

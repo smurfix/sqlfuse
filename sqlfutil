@@ -62,7 +62,7 @@ class Info(object):
 
 def node_info(db,node_id):
 	yield ("node","ID",node_id)
-	d = db.DoFn("select * from node where id=${id}",id=node_id, _dict=1)
+	d = db.DoFn("select * from node where id=${id}",id=node_id, _dict=True)
 	yield("cache-only", 'no' if d['autocopy'] else 'yes')
 	for f in "root name files".split():
 		yield (f,d[f])
@@ -98,7 +98,7 @@ def node_info(db,node_id):
 
 def root_info(db,root_id):
 	yield ("root","ID",root_id)
-	d = db.DoFn("select * from root where id=${id}",id=root_id, _dict=1)
+	d = db.DoFn("select * from root where id=${id}",id=root_id, _dict=True)
 	for f in "name inode nfiles ndirs nblocks".split():
 		yield (f,d[f])
 	n, = db.DoFn("select count(*) from node where root=${root}",root=root_id)
@@ -106,7 +106,7 @@ def root_info(db,root_id):
 
 def inode_info(db,inum):
 	yield ("inode","ID",inum)
-	d = db.DoFn("select * from inode where id=${id}",id=inum, _dict=1)
+	d = db.DoFn("select * from inode where id=${id}",id=inum, _dict=True)
 	for f in "uid gid mtime atime ctime size event seq typ".split():
 		v = d[f]
 		if f == "typ":
@@ -146,7 +146,7 @@ def inode_info(db,inum):
 
 def event_info(db,event_id):
 	yield ("event","ID",event_id)
-	d = db.DoFn("select * from event where id=${id}",id=event_id, _dict=1)
+	d = db.DoFn("select * from event where id=${id}",id=event_id, _dict=True)
 	yield("typ",typ[d["typ"]])
 	for f in "inode node".split():
 		yield(f,d[f])
@@ -177,7 +177,7 @@ def event_info(db,event_id):
 
 def updater_info(db,pnr):
 	yield("updater","id",pnr)
-	d = db.DoFn("select * from updater where id=${pnr}",pnr=pnr, _dict=1)
+	d = db.DoFn("select * from updater where id=${pnr}",pnr=pnr, _dict=True)
 	for f in "src dest".split():
 		n, = db.DoFn("select name from node where id=${node}",node=d[f])
 		yield(f,n)
@@ -188,7 +188,7 @@ def updater_info(db,pnr):
 
 def progress_info(db,pnr):
 	yield("progress","id",pnr)
-	d = db.DoFn("select * from progress where id=${pnr}",pnr=pnr, _dict=1)
+	d = db.DoFn("select * from progress where id=${pnr}",pnr=pnr, _dict=True)
 	for f in "src dest".split():
 		v = d[f]
 		if v is None: continue

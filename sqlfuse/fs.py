@@ -733,7 +733,7 @@ class SqlInode(Inode):
 			if self.seq:
 				yield self._save(db)
 
-			d = yield db.DoFn("select * from inode where id=${inode}", inode=self.nodeid, _dict=1)
+			d = yield db.DoFn("select * from inode where id=${inode}", inode=self.nodeid, _dict=True)
 			if self.seq is not None and self.seq == d["seq"]:
 				returnValue( None )
 

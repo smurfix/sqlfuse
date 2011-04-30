@@ -1,3 +1,9 @@
+python-sqlfuse (0.5.17-1) maverick; urgency=low
+
+  * various stuff :-/
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sat, 30 Apr 2011 09:22:27 +0200
+
 python-sqlfuse (0.5.16-1) unstable; urgency=low
 
   * Fix shutdown code: immediately run all tasks until complete

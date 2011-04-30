@@ -52,7 +52,12 @@ class NoLink(RuntimeError):
 	"""\
 		There's no record for connecting to a remote node.
 		"""
-	pass
+	def __init__(self,nodeid):
+		self.nodeid = nodeid
+	def __repr__(self):
+		return "<%s: %d>" % (self.__class__.__name__,self.nodeid)
+	def __str__(self):
+		return "%s: %d" % (self.__class__.__name__,self.nodeid)
 
 class DataMissing(BufferError):
 	"""\

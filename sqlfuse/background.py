@@ -367,6 +367,7 @@ class NodeCollector(BackgroundJob):
 		self.tree.topology,self.tree.neighbors = topo
 
 		# add new nodes
+		self.tree.missing_neighbors = set()
 		for k in nodes:
 			if k not in self.tree.remote:
 				trace('nodecollect',"add node %s",k)
@@ -382,6 +383,8 @@ class NodeCollector(BackgroundJob):
 				e = Deferred()
 				d.addBoth(lambda r: e.callback(None))
 				yield e
+			if k not in self.tree.topology:
+				self.tree.missing_neighbors.add(k)
 		self.tree.cleaner.trigger()
 
 
@@ -526,7 +529,13 @@ class CopyWorker(BackgroundJob):
 				trace('copyrun',"Start copying %d: %s",inode.nodeid,repr(inode.cache))
 				if inode.cache is not None:
 					yield inode.cache.get_data(0,inode.size)
+			except NoLink as e:
+				trace('copyrun',"Missing %d: %d",inode.nodeid,e.node)
+				yield self.tree.db(lambda db: db.Do("replace into todo(node,inode,missing) values(${node},${inode},${missing})", node=self.tree.node_id,inode=inode.nodeid, missing=e.node), DB_RETRIES)
+				self.tree.missing_neighbors.add(e.node)
+				
 			except Exception as e:
+				import pdb;pdb.set_trace()
 				f = failure.Failure()
 				trace('copyrun',"Failure copying %d: %s",inode.nodeid,f)
 				reason = f.getTraceback()
@@ -557,6 +566,9 @@ class CopyWorker(BackgroundJob):
 				trace('copyrun',"start TODO from %d",self.last_entry+1)
 			else:
 				trace('copyrun',"start TODO")
+			if self.tree.missing_neighbors:
+				trace('copyrun',"start missing %s",repr(self.tree.missing_neighbors))
+				f += " and (missing is None or missing not in ("+(",".join((str(x) for x in self.tree.missing_neighbors)))+"))"
 
 			entries = []
 			def app(*a):

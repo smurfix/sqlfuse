@@ -30,6 +30,7 @@ import twist
 tracer_info['fuse']="Log low-level FUSE request/responses"
 tracer_info['profile']="Log profiling start/stop (enabled)"
 tracers.add('profile')
+tracer_info['db']="Log database calls"
 
 h = None
 def main():
@@ -63,6 +64,10 @@ Turn off flags with a prepended '-'. Separate multiple flags with slashes ('/').
 				tracers.discard(s[1:])
 			else:
 				tracers.add(s)
+		if "db" in tracers:
+			from sqlmix import twisted as dbt
+			dbt._DEBUG = True
+
 
 	def startup():
 		db = DbPool(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)

@@ -110,6 +110,7 @@ class SqlFuse(FileSystem):
 
 	topology = None  # .topology wants to be an OrderedDict,
 	neighbors = None # but that's py2.7 and I'm too lazy to backport that.
+	missing_neighbors = None
 
 	def __init__(self,*a,**k):
 		self._slot = {}
@@ -304,11 +305,15 @@ class SqlFuse(FileSystem):
 		returnValue( xid )
 
 	def call_node(self,dest,name,*a,**k):
+		if dest in self.missing_neighbors:
+			raise NoLink(dest)
+
 		try:
 			node = self.topology[dest]
 			rem = self.remote[node]
 		except KeyError:
 			trace('error',"NoLink! %s %s %s %s",dest,name,repr(a),repr(k))
+			self.missing_neighbors.add(dest)
 			raise NoLink(dest)
 
 		if dest == node:
