@@ -1,3 +1,9 @@
+python-sqlfuse (0.5.19-1) unstable; urgency=low
+
+  * File closing cleaned up
+
+ -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Sun, 01 May 2011 16:36:32 +0200
+
 python-sqlfuse (0.5.18-1) unstable; urgency=low
 
   * Drop TODO records when a file is deleted

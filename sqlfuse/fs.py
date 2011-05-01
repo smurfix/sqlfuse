@@ -105,7 +105,7 @@ class Cache(object,pb.Referenceable):
 		if self.file_closer:
 			self.file_closer.cancel()
 			self.file_closer = None
-		self._close()
+		self._fclose()
 
 	@inlineCallbacks
 	def _maybe_close(self):
