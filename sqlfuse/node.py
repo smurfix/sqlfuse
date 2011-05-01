@@ -300,7 +300,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				def check_link(r):
 					if self._server is None:
 						# TODO: this really should not happen
-						raise NoLink
+						raise NoLink(self.node_id)
 				d.addCallback(check_link)
 				d.addCallback(lambda r: getattr(self._server,"do_"+name)(self,*a,**k))
 				def log_me(r):
