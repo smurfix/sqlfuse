@@ -479,6 +479,8 @@ class UpdateCollector(BackgroundJob):
 					data.add_range(r,replace=False)
 
 				elif typ == 'd':
+					yield db.Do("delete from todo where node=${node} and inode=${inode}", inode=inode.nodeid, node=self.tree.node_id, _empty=True)
+					yield db.Do("delete from fail where node=${node} and inode=${inode}", inode=inode.nodeid, node=self.tree.node_id, _empty=True)
 					yield reactor.callInThread(inode._os_unlink)
 					skip = True
 

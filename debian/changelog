@@ -1,3 +1,9 @@
+python-sqlfuse (0.5.18-1) unstable; urgency=low
+
+  * Drop TODO records when a file is deleted
+
+ -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Sun, 01 May 2011 10:07:49 +0200
+
 python-sqlfuse (0.5.17-1) maverick; urgency=low
 
   * various stuff :-/
