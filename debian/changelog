@@ -1,3 +1,9 @@
+python-sqlfuse (0.5.20-1) unstable; urgency=low
+
+  * formatting problem
+
+ -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Sun, 01 May 2011 20:23:27 +0200
+
 python-sqlfuse (0.5.19-1) unstable; urgency=low
 
   * File closing cleaned up

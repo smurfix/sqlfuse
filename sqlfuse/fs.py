@@ -820,7 +820,7 @@ class SqlInode(Inode):
 					self.nodeid = None
 				else:
 					# warn
-					trace('fs',"!!! inode_changed %d %d %d %s",self.nodeid,self.seq,seq,new_seq,repr(args))
+					trace('fs',"!!! inode_changed %d %d %d %d %s",self.nodeid,self.seq,seq,new_seq,repr(args))
 					if new_seq:
 						assert new_seq == seq+1
 					else:
