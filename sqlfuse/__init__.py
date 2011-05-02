@@ -133,8 +133,9 @@ def _emit(eventDict):
 			text = eventDict['failure'].getTraceback()
 		else:
 			text = " ".join([str(m) for m in eventDict["message"]]) + "\n"
-		if 'why' in eventDict:
-			text = eventDict['why']+': '+text
+		why = eventDict.get('why',None)
+		if why is not None:
+			text = why+': '+text
 		sys.stderr.write(text)
 		sys.stderr.flush()
 
