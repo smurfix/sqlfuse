@@ -815,12 +815,12 @@ class SqlInode(Inode):
 					seq,self.size = yield db.DoFn("select seq,size from inode where id=${inode}", inode=self.nodeid)
 				except NoData:
 					# deleted inode
-					trace('fs',"!!! inode_deleted %d %d %s",self.nodeid,self.seq,self.updated)
+					trace('fs',"!!! inode_deleted %s %s %s",self.nodeid,self.seq,self.updated)
 					del self.filesystem.nodes[self.nodeid]
 					self.nodeid = None
 				else:
 					# warn
-					trace('fs',"!!! inode_changed %d %d %d %d %s",self.nodeid,self.seq,seq,new_seq,repr(args))
+					trace('fs',"!!! inode_changed %s %s %s %s %s",self.nodeid,self.seq,seq,new_seq,repr(args))
 					if new_seq:
 						assert new_seq == seq+1
 					else:
