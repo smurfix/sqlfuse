@@ -19,7 +19,7 @@ from threading import Lock
 from twisted.internet import reactor,threads
 from twisted.python import log
 
-DBVERSION = "0.5.1"
+DBVERSION = "0.5.2"
 
 ManholeEnv = {}
 
