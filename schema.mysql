@@ -45,7 +45,7 @@ CREATE TABLE `inode` (
   `atime_ns` int(10) unsigned NOT NULL default '0',
   `mtime_ns` int(10) unsigned NOT NULL default '0',
   `ctime_ns` int(10) unsigned NOT NULL default '0',
-  `size` bigint(20) NOT NULL default '0', -- mirrors file size
+  `size` bigint(20) unsigned NOT NULL default '0', -- mirrors file size
   `rdev` int(10) NOT NULL default '0',
   `event` bigint(20) unsigned NULL, -- ID of file's latest event record
   `seq` bigint(20) unsigned not null default '1', -- update sequence number
