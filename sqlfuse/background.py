@@ -537,7 +537,6 @@ class CopyWorker(BackgroundJob):
 				self.tree.missing_neighbors.add(e.node)
 				
 			except Exception as e:
-				import pdb;pdb.set_trace()
 				f = failure.Failure()
 				trace('copyrun',"Failure copying %d: %s",inode.nodeid,f)
 				reason = f.getTraceback()
