@@ -186,7 +186,6 @@ class SqlFuse(FileSystem):
 		# This is atomic, as it's a transaction
 		@inlineCallbacks
 		def do_rename(db):
-			old_inode = yield inode_old._lookup(name_old,db)
 			try:
 				yield inode_new._unlink(name_new, ctx=ctx,db=db)
 			except EnvironmentError as e:
@@ -194,10 +193,10 @@ class SqlFuse(FileSystem):
 					raise
 			yield db.Do("update tree set name=${nname},parent=${ninode} where name=${oname} and parent=${oinode}", nname=name_new, ninode=inode_new.nodeid, oname=name_old, oinode=inode_old.nodeid)
 			def adj_size():
-				old_inode.mtime = nowtuple()
-				old_inode.size -= len(name_old)+1
-				new_inode.mtime = nowtuple()
-				new_inode.size += len(name_new)+1
+				inode_old.mtime = nowtuple()
+				inode_old.size -= len(name_old)+1
+				inode_new.mtime = nowtuple()
+				inode_new.size += len(name_new)+1
 			db.call_committed(adj_size)
 			returnValue( None )
 		return self.db(do_rename, DB_RETRIES)
