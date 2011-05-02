@@ -22,7 +22,7 @@ from weakref import WeakValueDictionary
 from twistfuse.filesystem import Inode,File,Dir
 from twistfuse.kernel import XATTR_CREATE,XATTR_REPLACE
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
+from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, succeed
 from twisted.internet.threads import deferToThread
 from twisted.spread import pb
 
@@ -842,32 +842,35 @@ class SqlInode(Inode):
 
 # busy-inode flag
 	def set_inuse(self):
+		"""Increment the inode's busy counter."""
 		if self.inuse >= 0:
 			self.inuse += 1
 		else:
 			self.inuse += -1
 
 	def clr_inuse(self):
-		#return True if it's to be deleted
+		"""\
+			Decrement the inode's busy counter,
+			kill the inode if it reaches zero and the inode is marked for deletion.
+			"""
+		#return a Deferred if it's to be deleted
 		if self.inuse < 0:
 			self.inuse += 1
 			if self.inuse == 0:
-				return True
+				return self.node.filesystem.db(self._remove, DB_RETRIES)
 		elif self.inuse > 0:
 			self.inuse -= 1
 		else:
 			raise RuntimeError("SqlInode %r counter mismatch" % (self,))
-		return False
+		return succeed(False)
 
 	def defer_delete(self):
+		"""Mark for deletion if in use."""
 		if not self.inuse:
 			return False
 		if self.inuse > 0:
 			self.inuse = -self.inuse
 		return True
-	def no_defer_delete(self,i):
-		if self.inuse < 0:
-			self.inuse = -self.inuse
 
 def _setprop(key):
 	def pget(self):
@@ -969,14 +972,12 @@ class SqlFile(File):
 	@inlineCallbacks
 	def release(self, ctx=None):
 		"""The last process closes the file."""
-		@inlineCallbacks
-		def do_release(db):
-			yield self.node._save(db)
-			if self.file:
-				yield deferToThread(self.file.close)
-			if self.node.clr_inuse():
-				yield self.node.filesystem._remove(self.node,db)
-		yield self.node.filesystem.db(do_release, DB_RETRIES)
+		yield self.node.filesystem.db(self.node._save, DB_RETRIES)
+		if self.file:
+			f = self.file
+			self.file = None
+			yield deferToThread(f.close)
+		yield self.node.clr_inuse()
 		if self.writes:
 			self.node.filesystem.record.finish_write(self.node)
 		returnValue( None )
@@ -1081,8 +1082,7 @@ class SqlDir(Dir):
 
 	@inlineCallbacks
 	def release(self, ctx=None):
-		if self.node.clr_inuse():
-			yield self.node.filesystem.db(self.node._remove, DB_RETRIES)
+		yield self.node.clr_inuse()
 		returnValue( None )
 
 	def sync(self, ctx=None):
