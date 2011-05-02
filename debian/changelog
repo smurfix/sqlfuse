@@ -1,4 +1,4 @@
-python-sqlfuse (0.5.21-2) maverick; urgency=low
+python-sqlfuse (0.5.22-1) unstable; urgency=low
 
   * printing None with %d won't work
 
@@ -28,7 +28,7 @@ python-sqlfuse (0.5.18-1) unstable; urgency=low
 
  -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Sun, 01 May 2011 10:07:49 +0200
 
-python-sqlfuse (0.5.17-1) maverick; urgency=low
+python-sqlfuse (0.5.17-1) unstable; urgency=low
 
   * various stuff :-/
 
