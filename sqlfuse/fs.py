@@ -484,7 +484,10 @@ class SqlInode(Inode):
 				yield inode._remove(db)
 		def adj_size():
 			self.mtime = nowtuple()
-			self.size -= len(name)+1
+			if self.size > len(name):
+				self.size -= len(name)+1
+			else:
+				log.err("Size problem, inode %s"%(self,))
 		db.call_committed(adj_size)
 		returnValue( None )
 
