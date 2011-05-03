@@ -116,6 +116,7 @@ class Cache(object,pb.Referenceable):
 		if self.file_closer:
 			self.file_closer.cancel()
 			self.file_closer = None
+		trace('rw',"%d: close file", self.nodeid)
 		yield reactor.callInThread(self._fclose)
 
 	def _fclose(self):
@@ -211,10 +212,12 @@ class Cache(object,pb.Referenceable):
 			ipath=self._file_path()
 			try:
 				self.file = open(ipath,"r+")
+				trace('rw',"%d: open file %s", self.nodeid,ipath)
 			except EnvironmentError as e:
 				if e.errno != errno.ENOENT:
 					raise
 				self.file = open(ipath,"w+")
+				trace('rw',"%d: open file %s (new)", self.nodeid,ipath)
 			if not self.file_closer:
 				self.file_closer = reactor.callLater(15,self._maybe_close)
 		self._last_file = time()
