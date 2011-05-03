@@ -15,6 +15,7 @@ BLOCKSIZE = 4096
 DB_RETRIES = 5
 
 import errno, fcntl, os, stat, sys
+from collections import deque
 from threading import Lock
 from time import time
 from weakref import WeakValueDictionary
@@ -303,6 +304,7 @@ class Cache(object,pb.Referenceable):
 # Normally the system caches inode records. However, we may have external
 # references (other nodes fetching data), so we guarantee uniqueness here
 _Inode = WeakValueDictionary()
+_InodeList = deque(maxlen=100)
 @inlineCallbacks
 def flush_inodes(db):
 	for i in _Inode.values():
@@ -753,6 +755,7 @@ class SqlInode(Inode):
 		self.changes = Range()
 		self.cache = NotKnown
 		self.load_lock = DeferredLock()
+		_InodeList.append(self)
 		# defer anything we only need when loaded to after _load is called
 
 	@inlineCallbacks
