@@ -1,3 +1,10 @@
+python-sqlfuse (0.5.24-1) unstable; urgency=low
+
+  * minor bugs squashed
+  * still a directory sizing bug
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Tue, 03 May 2011 21:56:31 +0200
+
 python-sqlfuse (0.5.23-1) unstable; urgency=low
 
   * Clean up and streamline shutting down.
