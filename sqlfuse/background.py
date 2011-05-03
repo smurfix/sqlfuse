@@ -30,6 +30,49 @@ from sqlfuse.topo import next_hops
 from sqlfuse.node import NoLink
 
 tracer_info['background']="Start/stop of background processing"
+# 'shutdown' is declared in sqlfuse.main
+
+class IdleWorker(object,Service):
+	"""\
+		This is used when shutting down: run all workers continuously
+		until none of them has more stuff to do.
+		"""
+	def __init__(self):
+		self.workers = set()
+
+	def add(self,w):
+		if w.workerDefer:
+			w.workerDefer.addCallback(lambda _: self.workers.add(w))
+		else:
+			self.workers.add(w)
+
+	@inlineCallbacks
+	def run(self):
+		while self.workers:
+			dl = []
+			wl = self.workers
+			self.workers = set()
+			for w in wl:
+				trace('shutdown',"IDLE start %s", w.__class__.__name__)
+				w.restart = False
+				d = maybeDeferred(w.work)
+				def err_w(r,w):
+					log.err("Processing "+w.__class__.__name__,r)
+					wl.remove(w)
+				def log_w(r,w):
+					trace('shutdown',"IDLE stop %s", w.__class__.__name__)
+					return r
+				d.addErrback(err_w,w)
+				d.addBoth(log_w,w)
+				dl.append(d)
+			yield DeferredList(dl)
+			trace('shutdown',"IDLE done")
+			for w in wl:
+				if w.restart:
+					self.workers.add(w)
+		
+IdleWorker = IdleWorker()
+
 
 class BackgroundJob(object,Service):
 	"""\
@@ -41,6 +84,7 @@ class BackgroundJob(object,Service):
 	workerCall = None # callLater
 	workerDefer = None # Deferred which waits for the worker to end
 	restart = False # if True, queue after initializing; if >1 start immediately
+	do_idle = False
 
 	def __init__(self,tree):
 		self.tree = tree
@@ -54,36 +98,33 @@ class BackgroundJob(object,Service):
 
 	def startService(self):
 		"""Startup. Part of IService."""
+		trace('background',"StartService %s",self.__class__.__name__)
 		super(BackgroundJob,self).startService()
 		if self.restart and not self.workerCall:
 			self.run()
 
 	def stopService(self):
-		"""Shutdown. Part of IService."""
+		"""Shutdown. Part of IService. Triggers a last run of the worker."""
+		trace('background',"StopService %s",self.__class__.__name__)
+		self.do_idle = True
 		super(BackgroundJob,self).stopService()
-		self.quit()
-		return self.workerDefer
+		if self.workerCall:
+			self.workerCall.cancel()
+			self.workerCall = None
+		IdleWorker.add(self)
 
 	def trigger(self):
-		"""Tell the worker to do something. Sometime later."""
-		if self.workerCall is None:
-			if not self.running:
-				self.run()
-				return
-			if self.workerDefer is None:
-				trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
-			self.workerCall = reactor.callLater(self.interval,self.run)
-		else:
-			self.restart = True
-
-	def quit(self):
-		"""Trigger the worker now (for the last time)."""
-		if self.workerCall is None and not self.restart:
+		"""Tell the worker to do something. Sometime later, if possible."""
+		if self.do_idle:
+			trace('background',"Re-run %s (shutdown trigger)", self.__class__.__name__)
+			IdleWorker.add(self)
 			return
-		trace('background',"Quit: Start %s now", self.__class__.__name__)
-		self.workerCall.cancel()
-		self.workerCall = None
-		self.run()
+			
+		if self.workerCall is None:
+			trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
+			self.workerCall = reactor.callLater(self.interval,self.run)
+		if self.workerDefer is not None:
+			self.restart = True
 
 	def run(self, dummy=None):
 		"""Background loop. Started via timer from trigger()."""
@@ -98,11 +139,13 @@ class BackgroundJob(object,Service):
 		def done(r):
 			self.workerDefer = None
 			if self.restart:
-				self.trigger()
+				if self.running:
+					self.trigger()
 			else:
 				trace('background',"Stopped %s", self.__class__.__name__)
 		self.workerDefer.addErrback(lambda e: log.err(e,"Running "+self.__class__.__name__))
 		self.workerDefer.addBoth(done)
+
 
 	def work(self):
 		"""Override this."""
@@ -339,6 +382,9 @@ class NodeCollector(BackgroundJob):
 		nodes = set()
 		if self.running:
 			self.restart = True
+		else:
+			return # don't need this when shutting down
+
 		@inlineCallbacks
 		def do_work(db):
 			yield db.DoSelect("select id from node where id != ${node} and root = ${root}",root=self.tree.root_id, node=self.tree.node_id, _empty=1, _callback=nodes.add)
@@ -424,6 +470,9 @@ class UpdateCollector(BackgroundJob):
 		nodes = set()
 		if self.running:
 			self.restart = True
+		else:
+			return # don't need this when shutting down
+
 		@inlineCallbacks
 		def do_work(db):
 			seq, = yield db.DoFn("select max(event.id) from event,node where typ='s' and node.root=${root} and node.id=event.node", root=self.tree.root_id)
@@ -508,10 +557,9 @@ class CopyWorker(BackgroundJob):
 	"""\
 		Periodically read the TODO list and fetch the files mentioned there.
 
-		This gets triggered by the UpdateCollector.
+		This gets triggered by the UpdateCollector (via self.tree.copier).
 		"""
-	interval = 0.1
-	restart = True
+	interval = 0.5
 	def __init__(self,tree):
 		self.nfiles = 100
 		self.nworkers = 3
@@ -521,7 +569,7 @@ class CopyWorker(BackgroundJob):
 	
 	@inlineCallbacks
 	def fetch(self):
-		while True:
+		while self.running:
 			i = yield self._queue.get()
 			if not i:
 				return
@@ -596,6 +644,8 @@ class CopyWorker(BackgroundJob):
 
 		workers = set()
 		for id,inum,typ in entries:
+			if not self.running:
+				break
 			if inum in workers:
 				pass
 			workers.add(inum)

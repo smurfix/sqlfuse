@@ -30,10 +30,11 @@ from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
 from sqlfuse import DBVERSION,nowtuple, trace,tracers
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE,DB_RETRIES
-from sqlfuse.background import RootUpdater,InodeCleaner,Recorder,NodeCollector,InodeWriter,CacheRecorder,UpdateCollector,CopyWorker
+from sqlfuse.background import RootUpdater,InodeCleaner,Recorder,NodeCollector,InodeWriter,CacheRecorder,UpdateCollector,CopyWorker,IdleWorker
 from sqlfuse.node import SqlNode,NoLink,MAX_BLOCK
 from sqlmix.twisted import DbPool,NoData
 
+tracer_info['shutdown']="Shutdown processing"
 
 class DummyQuit(object):
 	def quit(self): pass
@@ -351,7 +352,7 @@ class SqlFuse(FileSystem):
 			"""
 		# TODO: setup a copying thread
 		self.db = db
-		reactor.addSystemEventTrigger('during', 'shutdown', db.stopService)
+		#reactor.addSystemEventTrigger('before', 'shutdown', db.stopService)
 
 		self.node = node
 
@@ -400,10 +401,45 @@ class SqlFuse(FileSystem):
 			b = b(self)
 			setattr(self,a,b)
 			b.setServiceParent(self.services)
-		reactor.addSystemEventTrigger('before', 'shutdown', self.services.stopService)
+		reactor.addSystemEventTrigger('before', 'shutdown', self.umount)
 		yield self.services.startService()
 		yield self.connect_all()
 		self.record.trigger()
+	
+	@inlineCallbacks
+	def umount(self):
+		if self.shutting_down:
+			trace('shutdown',"called twice")
+			return
+		try:
+			self.shutting_down = True
+
+			trace('shutdown',"stopping services")
+			yield self.services.stopService()
+			trace('shutdown',"disconnect peers")
+			self.disconnect_all()
+			for k in self.remote.keys():
+				del self.remote[k]
+			n = 0
+			for c in reactor.getDelayedCalls():
+				n += 1
+				trace('shutdown',"speed-up %s",c)
+				c.reset(0)
+			if n:
+				trace('shutdown',"speed-up wait %d",n)
+				yield reactor.callLater(n/10,lambda: None)
+			trace('shutdown',"run idle")
+			yield IdleWorker.run()
+			trace('shutdown',"stop DB")
+			yield self.db.stopService()
+			trace('shutdown',"super")
+			yield super(SqlFuse,self).stop(False)
+			trace('shutdown',"close db")
+			yield self.db.close()
+			trace('shutdown',"done")
+		except Exception as e:
+			log.err(e,"Shutting down")
+			
 	
 	@inlineCallbacks
 	def connect_all(self):
@@ -438,28 +474,4 @@ class SqlFuse(FileSystem):
 		self.handler = handler
 		return {'flags': FUSE_ATOMIC_O_TRUNC|FUSE_ASYNC_READ|FUSE_EXPORT_SUPPORT|FUSE_BIG_WRITES,
 			'max_write':MAX_BLOCK}
-
-	@inlineCallbacks
-	def destroy(self):
-		"""\
-			Unmounting: tell the background job to stop.
-			"""
-		if self.shutting_down:
-			return
-		self.shutting_down = True
-
-		self.disconnect_all()
-		for k in self.remote.keys():
-			del self.remote[k]
-		# run all delayed jobs now
-		for c in reactor.getDelayedCalls():
-			c.reset(0)
-		yield self.services.stopService()
-		reactor.iterate(delay=0.05)
-		#self.db.stop() # TODO: shutdown databases
-		#reactor.iterate(delay=0.05)
-		self.db.close()
-		self.db = None
-		reactor.iterate(delay=0.01)
-
 

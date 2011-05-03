@@ -63,12 +63,6 @@ class NoCachedData(BufferError):
 		"""
 	pass
 
-shutting_down = False
-def _shut():
-	global shutting_down
-	shutting_down = True
-reactor.addSystemEventTrigger('before', 'shutdown', _shut)
-
 _Cache = WeakValueDictionary()
 class Cache(object,pb.Referenceable):
 	file_closer = None
@@ -123,9 +117,9 @@ class Cache(object,pb.Referenceable):
 		yield reactor.callInThread(self._fclose)
 
 	def _fclose(self):
-		if not self.file:
-			return
 		with self.lock:
+			if not self.file:
+				return
 			self.file.close()
 			self.file = None
 
@@ -281,6 +275,12 @@ class Cache(object,pb.Referenceable):
 # Normally the system caches inode records. However, we may have external
 # references (other nodes fetching data), so we guarantee uniqueness here
 _Inode = WeakValueDictionary()
+@inlineCallbacks
+def flush_inodes(db):
+	for i in _Inode.values():
+		yield i._shutdown(db)
+
+
 class SqlInode(Inode):
 	"""\
 	This represents an in-memory inode object.
@@ -313,7 +313,18 @@ class SqlInode(Inode):
 		inode.last_access = None
 		del self.filesystem.nodes[self.nodeid]
 
+	@inlineCallbacks
+	def _shutdown(self,db):
+		"""When shutting down, flush the inode from the system."""
+		if self.last_access:
+			self.last_access.cancel()
+			self.last_access = None
+		yield self._save(db)
+		yield self._close()
+		del self.filesystem.nodes[self.nodeid]
+
 	def getattr(self):
+		"""Read inode attributes from the database."""
 		@inlineCallbacks
 		def do_getattr(db):
 			res = {'ino':self.nodeid if self.nodeid != self.filesystem.inum else 1}
@@ -784,12 +795,10 @@ class SqlInode(Inode):
 
 	@inlineCallbacks
 	def _save(self, db, new_seq=None):
-		"""Save local attributes"""
+		"""Save this inode's attributes"""
 		if not self.nodeid: return
 		ch = None
 
-		# no "with" statement here: after collecting attrs, we need
-		# to grab the writelock before releasing the inode lock
 		if not self.updated and not self.changes:
 			return
 		args = {}
