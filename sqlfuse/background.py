@@ -106,15 +106,27 @@ class BackgroundJob(object,Service):
 	def stopService(self):
 		"""Shutdown. Part of IService. Triggers a last run of the worker."""
 		trace('background',"StopService %s",self.__class__.__name__)
-		self.do_idle = True
-		super(BackgroundJob,self).stopService()
-		if self.workerCall:
-			self.workerCall.cancel()
-			self.workerCall = None
-		IdleWorker.add(self)
-		return triggeredDefer(self.workerDefer)
+		try:
+			self.do_idle = True
+			super(BackgroundJob,self).stopService()
+			if self.workerCall:
+				self.workerCall.cancel()
+				self.workerCall = None
+			IdleWorker.add(self)
+			d = triggeredDefer(self.workerDefer)
+			if d is None:
+				trace('background',"StopService %s: not running",self.__class__.__name__)
+			else:
+				trace('background',"StopService %s: wait for finish",self.__class__.__name__)
+				def rep(r):
+					trace('background',"StopService %s: finished",self.__class__.__name__)
+					return r
+				d.addBoth(rep)
+			return d
+		except Exception as e:
+			log.err(e,"StopService "+self.__class__.__name__)
 
-	def trigger(self):
+	def trigger(self, during_work=False):
 		"""Tell the worker to do something. Sometime later, if possible."""
 		if self.do_idle:
 			trace('background',"Re-run %s (shutdown trigger)", self.__class__.__name__)
@@ -124,7 +136,10 @@ class BackgroundJob(object,Service):
 		if self.workerDefer is not None:
 			self.restart = True
 		elif self.workerCall is None:
-			trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
+			if during_work:
+				trace('background',"Start %s in %f sec (repeat)", self.__class__.__name__,self.interval)
+			else:
+				trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
 			self.workerCall = reactor.callLater(self.interval,self.run)
 
 	def run(self, dummy=None):
@@ -141,7 +156,9 @@ class BackgroundJob(object,Service):
 			self.workerDefer = None
 			if self.restart:
 				if self.running:
-					self.trigger()
+					self.trigger(True)
+				else:
+					trace('background',"Stopped %s (shutdown)", self.__class__.__name__)
 			else:
 				trace('background',"Stopped %s", self.__class__.__name__)
 		self.workerDefer.addErrback(lambda e: log.err(e,"Running "+self.__class__.__name__))
