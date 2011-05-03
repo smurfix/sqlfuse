@@ -23,7 +23,7 @@ from twisted.internet.threads import deferToThread
 from twisted.python import failure,log
 
 from sqlmix import NoData
-from sqlfuse import trace,tracer_info
+from sqlfuse import trace,tracer_info,triggeredDefer
 from sqlfuse.fs import BLOCKSIZE,SqlInode,DB_RETRIES
 from sqlfuse.range import Range
 from sqlfuse.topo import next_hops
@@ -426,9 +426,7 @@ class NodeCollector(BackgroundJob):
 					log.err(r,"Problem adding node")
 				d.addErrback(lerr)
 
-				e = Deferred()
-				d.addBoth(lambda r: e.callback(None))
-				yield e
+				yield d
 			if k not in self.tree.topology:
 				self.tree.missing_neighbors.add(k)
 		self.tree.cleaner.trigger()

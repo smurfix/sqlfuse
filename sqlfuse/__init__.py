@@ -11,7 +11,8 @@ from __future__ import division, print_function, absolute_import
 
 import twist
 
-__all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION', 'trace', 'tracers','tracer_info', 'ManholeEnv')
+__all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION', 'trace', 'tracers','tracer_info', 'ManholeEnv',
+'triggeredDefer')
 
 import datetime,errno,inspect,os,sys
 from threading import Lock
@@ -84,6 +85,23 @@ def flag2mode(flags):
 		mode += "+"
 
 	return mode
+
+
+def triggeredDefer(x):
+	"""\
+		If @x is a Deferred, return another Deferred that runs
+		when @x is ready, without changing the behavior of @x
+		in any way.
+		Otherwise, return None.
+	"""
+	if isinstance(x,Deferred):
+		d = Deferred()
+		def whenDone(r):
+			d.callback(None)
+			return r
+		x.addBoth(whenDone)
+		return d
+	return None
 
 
 tracer_info['thread'] = "Log thread start/stop"
