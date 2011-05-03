@@ -2,15 +2,14 @@ Source: python-sqlfuse
 Section: python
 Priority: optional
 Maintainer: Matthias Urlichs <smurf@smurf.noris.de>
-Build-Depends: debhelper (>= 5), python-central (>= 0.5), python-all-dev, python-twisted-core (>= 10.1)
-XS-Python-Version: all
+Build-Depends: debhelper (>= 5), python-central (>= 0.5), python-all-dev (>= 2.6), python-twisted-core (>= 10.1)
+XS-Python-Version: >= 2.6
 Standards-Version: 3.7.2
 
 Package: python-sqlfuse
 Architecture: all
 Depends: ${python:Depends}, python (>= 2.6), python-twisted-core (>= 10.1), python-sqlmix (>> 0.9.13), fuse-utils (>> 2.8), python-twistfuse (>> 0.1.6), python-argparse, python-passfd
 Provides: ${python:Provides}
-XB-Python-Version: ${python:Versions}
 Description: A replicated FUSE filesystem which stores metadata in SQL
  This filesystem stores the actual contents in a "normal" file system, but
  all the metadata (directory structure, access rights, etc.) are stored in
