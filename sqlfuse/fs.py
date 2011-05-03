@@ -180,13 +180,13 @@ class Cache(object,pb.Referenceable):
 
 	def _read(self,offset,length):
 		with self.lock:
-			self._have_file()
+			self._have_file("read")
 			self.file.seek(offset)
 			return self.file.read(length)
 
 	def _write(self,offset,data):
 		with self.lock:
-			self._have_file()
+			self._have_file("write")
 			self.file.seek(offset)
 			self.file.write(data)
 
@@ -197,7 +197,7 @@ class Cache(object,pb.Referenceable):
 
 	def _trim(self,size):
 		with self.lock:
-			self._have_file()
+			self._have_file("trim")
 			self.file.truncate(size)
 
 	def _sync(self, flags):
@@ -208,17 +208,17 @@ class Cache(object,pb.Referenceable):
 				else:
 					os.fsync(self.file.fileno())
 
-	def _have_file(self):
+	def _have_file(self, reason):
 		if not self.file:
 			ipath=self._file_path()
 			try:
 				self.file = open(ipath,"r+")
-				trace('fs',"%d: open file %s", self.nodeid,ipath)
+				trace('fs',"%d: open file %s for %s", self.nodeid,ipath,reason)
 			except EnvironmentError as e:
 				if e.errno != errno.ENOENT:
 					raise
 				self.file = open(ipath,"w+")
-				trace('fs',"%d: open file %s (new)", self.nodeid,ipath)
+				trace('fs',"%d: open file %s for %s (new)", self.nodeid,ipath,reason)
 			if not self.file_closer:
 				self.file_closer = reactor.callLater(15,self._maybe_close)
 		self._last_file = time()
