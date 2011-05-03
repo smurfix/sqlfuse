@@ -24,6 +24,7 @@ from twistfuse.kernel import XATTR_CREATE,XATTR_REPLACE
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, succeed
 from twisted.internet.threads import deferToThread
+from twisted.python import log
 from twisted.spread import pb
 
 from sqlfuse import nowtuple,log_call,flag2mode, trace,tracer_info
