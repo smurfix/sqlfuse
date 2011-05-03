@@ -1,8 +1,10 @@
 python-sqlfuse (0.5.25-1) unstable; urgency=low
 
+  * make inode flushing on shutdown actually work
+  * cleanup
   * logging changes
 
- -- Matthias Urlichs <smurf@smurf.noris.de>  Tue, 03 May 2011 22:07:00 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Tue, 03 May 2011 22:38:46 +0200
 
 python-sqlfuse (0.5.24-1) unstable; urgency=low
 

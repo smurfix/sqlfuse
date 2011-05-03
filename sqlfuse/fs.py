@@ -9,7 +9,7 @@
 
 from __future__ import division, absolute_import
 
-__all__ = ("SqlInode",)
+__all__ = ("SqlInode","flush_inodes")
 
 BLOCKSIZE = 4096
 DB_RETRIES = 5
@@ -117,13 +117,13 @@ class Cache(object,pb.Referenceable):
 		if self.file_closer:
 			self.file_closer.cancel()
 			self.file_closer = None
-		trace('fs',"%d: close file", self.nodeid)
 		yield reactor.callInThread(self._fclose)
 
 	def _fclose(self):
 		with self.lock:
 			if not self.file:
 				return
+			trace('fs',"%d: close file", self.nodeid)
 			self.file.close()
 			self.file = None
 
@@ -238,6 +238,7 @@ class Cache(object,pb.Referenceable):
 		r = Range()
 		if end > 0:
 			r.add(0,end)
+		trace('fs',"%s: trim to %d",self.nodeid,end)
 		self.known &= r
 		self.available &= r
 		self.tree.changer.note(self)
@@ -321,30 +322,17 @@ class SqlInode(Inode):
 #		'cache',         # Range of bytes read from remote nodes
 #		'inuse',         # open files on this inode? <0:delete after close
 #		'write_timer',   # attribute write timer
-#		'last_access',   # cleanup timer
 #		]
-
-	# ___ FUSE methods ___
-
-	def getnode(self,nodeid):
-		inode = super(SqlInode,self).getnode(nodeid)
-		if inode.last_access:
-			inode.last_access.cancel()
-		inode.last_access = reactor.callLater(self.filesystem.ENTRY_VALID,self._drop)
-
-	def _drop(self):
-		inode.last_access = None
-		del self.filesystem.nodes[self.nodeid]
 
 	@inlineCallbacks
 	def _shutdown(self,db):
 		"""When shutting down, flush the inode from the system."""
-		if self.last_access:
-			self.last_access.cancel()
-			self.last_access = None
 		yield self._save(db)
-		yield self._close()
+		if self.cache:
+			yield self.cache._close()
 		del self.filesystem.nodes[self.nodeid]
+
+	# ___ FUSE methods ___
 
 	def getattr(self):
 		"""Read inode attributes from the database."""

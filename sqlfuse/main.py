@@ -29,7 +29,7 @@ from twisted.python import log
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
 from sqlfuse import DBVERSION,nowtuple, trace,tracer_info
-from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE,DB_RETRIES
+from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE,DB_RETRIES,flush_inodes
 from sqlfuse.background import RootUpdater,InodeCleaner,Recorder,NodeCollector,InodeWriter,CacheRecorder,UpdateCollector,CopyWorker,IdleWorker
 from sqlfuse.node import SqlNode,NoLink,MAX_BLOCK
 from sqlmix.twisted import DbPool,NoData
@@ -430,6 +430,8 @@ class SqlFuse(FileSystem):
 				yield reactor.callLater(n/10,lambda: None)
 			trace('shutdown',"run idle")
 			yield IdleWorker.run()
+			trace('shutdown',"flush inodes")
+			yield self.db(flush_inodes)
 			trace('shutdown',"super")
 			yield super(SqlFuse,self).stop(False)
 			trace('shutdown',"stop DB")
