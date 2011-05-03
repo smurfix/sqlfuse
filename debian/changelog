@@ -2,9 +2,10 @@ python-sqlfuse (0.5.23-1) unstable; urgency=low
 
   * Clean up and streamline shutting down.
   * Hotpatch Python threading module (infinite recursion when debugging, fixed in 2.7).
+  * Use the cache file, no more private file handles
   * minor bugs squashed
 
- -- Matthias Urlichs <smurf@smurf.noris.de>  Tue, 03 May 2011 20:46:58 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Tue, 03 May 2011 21:42:20 +0200
 
 python-sqlfuse (0.5.22-1) unstable; urgency=low
 

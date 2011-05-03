@@ -187,10 +187,23 @@ class Cache(object,pb.Referenceable):
 			self.file.seek(offset)
 			self.file.write(data)
 
+	def _flush(self):
+		with self.lock:
+			if self.file:
+				self.file.flush()
+
 	def _trim(self,size):
 		with self.lock:
 			self._have_file()
 			self.file.truncate(size)
+
+	def _sync(self, flags):
+		with self.lock:
+			if self.file:
+				if flags & 1 and hasattr(os, 'fdatasync'):
+					os.fdatasync(self.file.fileno())
+				else:
+					os.fsync(self.file.fileno())
 
 	def _have_file(self):
 		if not self.file:
@@ -218,10 +231,12 @@ class Cache(object,pb.Referenceable):
 
 	def trim(self,end):
 		r = Range()
-		r.add(0,end)
+		if end > 0:
+			r.add(0,end)
 		self.known &= r
 		self.available &= r
 		self.tree.changer.note(self)
+		return deferToThread(self._trim,0)
 
 	def has(self,offset,end):
 		"""\
@@ -378,11 +393,13 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
 		"""Existing file."""
+		trace('rw',"%s: open file (%s)",self,self.filesystem.FileType)
 		yield self.filesystem.db(self._load, DB_RETRIES)
 		if stat.S_ISDIR(self.mode):
 			raise IOError(errno.EISDIR)
 		f = self.filesystem.FileType(self,flags)
 		yield f.open()
+		trace('rw',"%s: opened file: %s",self,f)
 		returnValue( f )
 
 	@inlineCallbacks
@@ -900,7 +917,6 @@ class SqlFile(File):
 	"""Operations on open files.
 	"""
 	mtime = None
-	file = None
 
 	def __init__(self, node,mode):
 		"""Open the file. Also remember that the inode is in use
@@ -914,7 +930,6 @@ class SqlFile(File):
 	@inlineCallbacks
 	def open(self, ctx=None):
 		mode = flag2mode(self.mode)
-		ipath = yield deferToThread(self.node._file_path)
 		retry = False
 		if self.mode & os.O_TRUNC:
 			self.node.size = 0
@@ -923,17 +938,8 @@ class SqlFile(File):
 			retry = True
 			mode = "r+"
 
-		try:
-			self.file = yield deferToThread(open,ipath,mode)
-		except EnvironmentError as e:
-			if e.errno != errno.ENOENT or not retry:
-				raise
-			self.file = yield deferToThread(open,ipath,"w+")
-			self.node.filesystem.record.new(self.node)
-
 		if self.mode & os.O_TRUNC:
-			yield deferToThread(os.ftruncate,self.file.fileno(),0)
-			self.node.cache.trim(0)
+			yield self.node.cache.trim(0)
 		returnValue( None )
 
 	@inlineCallbacks
@@ -962,25 +968,13 @@ class SqlFile(File):
 
 		returnValue( data )
 
-	def _read(self,offset,length):
-		"""Actually write the file data. Don't change any metadata here!"""
-		with self.lock:
-			self.file.seek(offset)
-			return self.file.read(length)
-
-	def _write(self,offset,buf):
-		"""Actually write the file data. Don't change any metadata here!"""
-		with self.lock:
-			self.file.seek(offset)
-			self.file.write(buf)
-
 	@inlineCallbacks
 	def write(self, offset,buf, ctx=None):
 		"""Write file, updating mtime, possibly updating size"""
 		# TODO: use fstat() for size info, access may be concurrent
 		trace('rw',"%d: write %d @ %d", self.node.nodeid,len(buf), offset)
 
-		yield deferToThread(self._write,offset,buf)
+		yield deferToThread(self.node.cache._write,offset,buf)
 		end = offset+len(buf)
 		if self.node.cache:
 			yield self.node.cache.has(offset,end)
@@ -997,34 +991,22 @@ class SqlFile(File):
 	def release(self, ctx=None):
 		"""The last process closes the file."""
 		yield self.node.filesystem.db(self.node._save, DB_RETRIES)
-		if self.file:
-			f = self.file
-			self.file = None
-			yield deferToThread(f.close)
 		yield self.node.clr_inuse()
 		if self.writes:
 			self.node.filesystem.record.finish_write(self.node)
 		returnValue( None )
 
 	def flush(self,flags, ctx=None):
-		"""One process closeds the file"""
-		if self.file:
-			return deferToThread(self.file.flush)
+		"""One process closed the file"""
+		return deferToThread(self.node.cache._flush)
 
-	@inlineCallbacks
 	def sync(self, flags, ctx=None):
 		"""\
 			self-explanatory :-P
 
-			flags&1: use fdatasync()
+			flags&1: use fdatasync(), if available
 		"""
-		if self.file:
-			if flags & 1 and hasattr(os, 'fdatasync'):
-				yield deferToThread(os.fdatasync,self.file.fileno())
-			else:
-				yield deferToThread(os.fsync,self.file.fileno())
-			yield self.node.sync(flags)
-		returnValue( None )
+		return self.node.cache._sync(flags)
 
 	def lock(self, cmd, owner, **kw):
 		log_call()
