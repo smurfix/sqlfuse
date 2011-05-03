@@ -12,9 +12,6 @@ from __future__ import absolute_import
 
 BLOCKSIZE = 4096
 
-if __debug__:
-	import threading
-	threading._VERBOSE = True
 
 from twisted.internet import reactor
 from twisted.spread import pb
@@ -31,6 +28,10 @@ tracer_info['fuse']="Log low-level FUSE request/responses"
 tracer_info['profile']="Log profiling start/stop (enabled)"
 tracers.add('profile')
 tracer_info['db']="Log database calls"
+
+if __debug__:
+	tracer_info['osthread']="Low-level thread tracing"
+	import threading
 
 h = None
 def main():
@@ -67,7 +68,8 @@ Turn off flags with a prepended '-'. Separate multiple flags with slashes ('/').
 		if "db" in tracers:
 			from sqlmix import twisted as dbt
 			dbt._DEBUG = True
-
+		if "osthread" in tracers:
+			threading._VERBOSE = True
 
 	def startup():
 		db = DbPool(dbtye=opt.dbtype,host=opt.host,port=opt.port,database=opt.database,username=opt.username,password=opt.password)
