@@ -104,7 +104,7 @@ class Cache(object,pb.Referenceable):
 
 	@inlineCallbacks
 	def _maybe_close(self):
-		if self._last_file < time()-5:
+		if self._last_file < time()-5 or self.node.filesystem.shutting_down:
 			self.file_closer = None
 			yield self._close()
 		else:
