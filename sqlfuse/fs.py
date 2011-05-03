@@ -360,11 +360,12 @@ class SqlInode(Inode):
 			returnValue( res )
 		return self.filesystem.db(do_getattr, DB_RETRIES)
 
-	@inlineCallbacks
 	def setattr(self, **attrs):
 		size = attrs.get('size',None)
-		if size is not None:
-			yield deferToThread(self.cache._trim,size)
+		if size is not None and self.cache and self.size != size:
+			dtrim = self.cache.trim(size)
+		else:
+			dtrim = None
 		do_mtime = False; do_ctime = False; did_mtime = False
 		for f in inode_attrs:
 			if f == "ctime": continue
@@ -384,6 +385,7 @@ class SqlInode(Inode):
 			self.ctime = nowtuple()
 		if do_mtime and not did_mtime:
 			self.mtime = nowtuple()
+		return dtrim
 
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
