@@ -282,6 +282,9 @@ class Cache(object,pb.Referenceable):
 				self.in_progress += todo
 				try:
 					yield self.node.filesystem.each_node(chk,"readfile",self.nodeid,self,todo)
+				except Exception as e:
+					trace('cache',"%s: error: %s", self.nodeid, e)
+					raise
 				finally:
 					self.in_progress -= todo
 
@@ -293,6 +296,7 @@ class Cache(object,pb.Referenceable):
 				yield q
 
 			missing = r - self.available
+		trace('cache',"%s: ready", self.nodeid)
 		returnValue( True )
 	
 
