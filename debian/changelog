@@ -2,39 +2,40 @@ python-sqlfuse (0.5.23-1) unstable; urgency=low
 
   * Clean up and streamline shutting down.
   * Hotpatch Python threading module (infinite recursion when debugging, fixed in 2.7).
+  * minor bugs squashed
 
- -- Matthias Urlichs <smurf@data.intern.smurf.noris.de>  Tue, 03 May 2011 19:40:18 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Tue, 03 May 2011 20:46:58 +0200
 
 python-sqlfuse (0.5.22-1) unstable; urgency=low
 
   * printing None with %d won't work
   * fix rename
 
- -- Matthias Urlichs <smurf@data.intern.smurf.noris.de>  Mon, 02 May 2011 02:32:46 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Mon, 02 May 2011 02:32:46 +0200
 
 python-sqlfuse (0.5.21-1) unstable; urgency=low
 
   * missing parameter
 
- -- Matthias Urlichs <smurf@data.intern.smurf.noris.de>  Sun, 01 May 2011 20:31:32 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sun, 01 May 2011 20:31:32 +0200
 
 python-sqlfuse (0.5.20-1) unstable; urgency=low
 
   * formatting problem
 
- -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Sun, 01 May 2011 20:23:27 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sun, 01 May 2011 20:23:27 +0200
 
 python-sqlfuse (0.5.19-1) unstable; urgency=low
 
   * File closing cleaned up
 
- -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Sun, 01 May 2011 16:36:32 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sun, 01 May 2011 16:36:32 +0200
 
 python-sqlfuse (0.5.18-1) unstable; urgency=low
 
   * Drop TODO records when a file is deleted
 
- -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Sun, 01 May 2011 10:07:49 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sun, 01 May 2011 10:07:49 +0200
 
 python-sqlfuse (0.5.17-1) unstable; urgency=low
 
@@ -135,7 +136,7 @@ python-sqlfuse (0.5.3-1) unstable; urgency=low
   * Fix passing the inode and mode to readdir. Type argument is not a mode. Ouch.
   * Retry creating files so /bin/cp is happy
 
- -- Matthias Urlichs <smurf@deee.intern.smurf.noris.de>  Wed, 06 Apr 2011 23:37:27 +0200
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Wed, 06 Apr 2011 23:37:27 +0200
 
 python-sqlfuse (0.5.2-1) unstable; urgency=low
 
