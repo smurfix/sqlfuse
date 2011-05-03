@@ -518,6 +518,7 @@ class SqlInode(Inode):
 				self.size -= len(name)+1
 			else:
 				log.err("Size problem, inode %s"%(self,))
+				self.size = 0
 		db.call_committed(adj_size)
 		returnValue( None )
 
