@@ -112,6 +112,7 @@ class BackgroundJob(object,Service):
 			self.workerCall.cancel()
 			self.workerCall = None
 		IdleWorker.add(self)
+		return triggeredDefer(self.workerDefer)
 
 	def trigger(self):
 		"""Tell the worker to do something. Sometime later, if possible."""
@@ -120,11 +121,11 @@ class BackgroundJob(object,Service):
 			IdleWorker.add(self)
 			return
 			
-		if self.workerCall is None:
-			trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
-			self.workerCall = reactor.callLater(self.interval,self.run)
 		if self.workerDefer is not None:
 			self.restart = True
+		elif self.workerCall is None:
+			trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
+			self.workerCall = reactor.callLater(self.interval,self.run)
 
 	def run(self, dummy=None):
 		"""Background loop. Started via timer from trigger()."""
