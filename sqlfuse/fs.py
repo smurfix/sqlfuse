@@ -55,6 +55,7 @@ mode_type[stat.S_IFSOCK] = 12 # DT_SOCK
 
 tracer_info['fs']="file system details"
 tracer_info['rw']="read/write-level calls"
+tracer_info['cache']="get remote files"
 
 class NotKnown:
 	pass
@@ -116,7 +117,7 @@ class Cache(object,pb.Referenceable):
 		if self.file_closer:
 			self.file_closer.cancel()
 			self.file_closer = None
-		trace('rw',"%d: close file", self.nodeid)
+		trace('fs',"%d: close file", self.nodeid)
 		yield reactor.callInThread(self._fclose)
 
 	def _fclose(self):
@@ -212,12 +213,12 @@ class Cache(object,pb.Referenceable):
 			ipath=self._file_path()
 			try:
 				self.file = open(ipath,"r+")
-				trace('rw',"%d: open file %s", self.nodeid,ipath)
+				trace('fs',"%d: open file %s", self.nodeid,ipath)
 			except EnvironmentError as e:
 				if e.errno != errno.ENOENT:
 					raise
 				self.file = open(ipath,"w+")
-				trace('rw',"%d: open file %s (new)", self.nodeid,ipath)
+				trace('fs',"%d: open file %s (new)", self.nodeid,ipath)
 			if not self.file_closer:
 				self.file_closer = reactor.callLater(15,self._maybe_close)
 		self._last_file = time()
@@ -270,6 +271,7 @@ class Cache(object,pb.Referenceable):
 		while missing:
 			todo = missing - self.in_progress
 			if todo:
+				trace('cache',"%s: fetch %s", self.nodeid, todo)
 				# One option: ask each node for 'their' data, then do
 				# another pass asking all of them for whatever is missing.
 				# However, it's much simpler (and causes less load overall)
@@ -283,6 +285,7 @@ class Cache(object,pb.Referenceable):
 					self.in_progress -= todo
 
 			else:
+				trace('cache',"%s: wait for %s", self.nodeid, missing)
 				assert missing & self.in_progress
 				q = Deferred()
 				self.q.append(q)
@@ -397,13 +400,13 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
 		"""Existing file."""
-		trace('rw',"%s: open file (%s)",self,self.filesystem.FileType)
+		trace('fs',"%s: open file (%s)",self,self.filesystem.FileType)
 		yield self.filesystem.db(self._load, DB_RETRIES)
 		if stat.S_ISDIR(self.mode):
 			raise IOError(errno.EISDIR)
 		f = self.filesystem.FileType(self,flags)
 		yield f.open()
-		trace('rw',"%s: opened file: %s",self,f)
+		trace('fs',"%s: opened file: %s",self,f)
 		returnValue( f )
 
 	@inlineCallbacks
