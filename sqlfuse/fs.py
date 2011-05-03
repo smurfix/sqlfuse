@@ -53,6 +53,7 @@ mode_type[stat.S_IFREG]  =  8 # DT_REG
 mode_type[stat.S_IFSOCK] = 12 # DT_SOCK
 
 tracer_info['fs']="file system details"
+tracer_info['rw']="read/write-level calls"
 
 class NotKnown:
 	pass
@@ -938,26 +939,34 @@ class SqlFile(File):
 	@inlineCallbacks
 	def read(self, offset,length, ctx=None):
 		"""Read file, updating atime"""
+		trace('rw',"%d: read %d @ %d, len %d", self.node.nodeid,length,offset,self.node.size)
 		if offset >= self.node.size:
+			trace('rw',"%d: return nothing", self.node.nodeid)
 			returnValue( "" )
 		if offset+length > self.node.size:
 			length = self.node.size-offset
+			trace('rw',"%d: return only %d", self.node.nodeid,length)
 
 		self.node.do_atime()
 		cache = self.node.cache
 		if cache:
 			res = yield cache.get_data(offset,length)
 			if not res:
+				trace('rw',"%d: error (no cached data)", self.node.nodeid)
 				raise NoCachedData(self.node.nodeid)
 			data = yield deferToThread(cache._read,offset,length)
+			trace('rw',"%d: return %d (cached)", self.node.nodeid,len(data))
 		else:
-			def _read():
-				with self.lock:
-					self.file.seek(offset)
-					return self.file.read(length)
-			data = yield deferToThread(_read)
+			data = yield deferToThread(_read,offset,length)
+			trace('rw',"%d: return %d", self.node.nodeid,len(data))
 
 		returnValue( data )
+
+	def _read(self,offset,length):
+		"""Actually write the file data. Don't change any metadata here!"""
+		with self.lock:
+			self.file.seek(offset)
+			return self.file.read(length)
 
 	def _write(self,offset,buf):
 		"""Actually write the file data. Don't change any metadata here!"""
@@ -969,6 +978,8 @@ class SqlFile(File):
 	def write(self, offset,buf, ctx=None):
 		"""Write file, updating mtime, possibly updating size"""
 		# TODO: use fstat() for size info, access may be concurrent
+		trace('rw',"%d: write %d @ %d", self.node.nodeid,len(buf), offset)
+
 		yield deferToThread(self._write,offset,buf)
 		end = offset+len(buf)
 		if self.node.cache:
@@ -976,6 +987,7 @@ class SqlFile(File):
 
 		self.node.mtime = nowtuple()
 		if self.node.size < end:
+			trace('rw',"%d: end now %d", self.node.nodeid, end)
 			self.node.size = end
 		self.node.changes.add(offset,end)
 		self.writes += 1
