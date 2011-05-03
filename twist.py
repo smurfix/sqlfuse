@@ -210,3 +210,21 @@ pb.Broker._sendFailure = _bsf
 
 def _nop(self): pass
 failure.Failure.cleanFailure = _nop
+
+if __debug__ and sys.version_info < (2,6,7):
+	import threading
+	def _note(self, format, *args):
+		if getattr(self,'__verbose',False):
+			format = format % args
+			# Issue #4188: calling current_thread() can incur an infinite
+			# recursion if it has to create a DummyThread on the fly.
+			ident = threading._get_ident()
+			try:
+				name = threading._active[ident].name
+			except KeyError:
+				name = "<OS thread %d>" % ident
+			format = "%s: %s\n" % (name, format)
+			sys.stderr.write(format)
+	threading._Verbose._note = _note	
+
+
