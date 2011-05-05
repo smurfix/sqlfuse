@@ -25,7 +25,7 @@ CREATE TABLE `info` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`)
 ) DEFAULT CHARSET=utf8;
-insert into info(name,value) values('version','0.5.2');
+insert into info(name,value) values('version','0.5.3');
 
 --
 -- An inode is the primary identifier for a file or directory.
@@ -160,10 +160,12 @@ CREATE TABLE `cache` (
   `id` int(10) unsigned NOT NULL auto_increment,
   `inode` bigint(20) unsigned NOT NULL,
   `node` int(10) unsigned NOT NULL,
+  `event` bigint(20) unsigned NULL,
   `cached` varchar(1023) null, -- known-data range: NULL=whole file
   PRIMARY KEY (`id`),
   unique key `inodeloc` (node,inode),
   key `fk_cache_inode` (inode),
+  key `fk_cache_event` (event),
   constraint `fk_cache_inode` foreign key(`inode`) references `inode`(`id`) on delete cascade,
   constraint `fk_cache_node` foreign key(`node`) references `node`(`id`) on delete cascade
 ) DEFAULT CHARSET=utf8;
@@ -176,18 +178,19 @@ CREATE TABLE `event` (
   `id` bigint(20) unsigned NOT NULL auto_increment,
   `inode` bigint(20) unsigned NOT NULL,
   `node` int(10) unsigned NOT NULL,
-  `typ` char character set ascii NOT NULL, -- 'n'ew 'c'hange 'f'inish_write 'd'elete 'i'nit_node 's'ync
+  `typ` char character set ascii NOT NULL, -- 'n'ew 'c'hange 'f'inish_write 'd'elete 'i'nit_node 's'ync 't'rim
   `range` varbinary(1023) NULL, -- for change records: what was witten?
   PRIMARY KEY (`id`),
   KEY `fk_event_node` (`node`),
-  KEY `fk_event_inode` (`inode`,`typ`),
+  KEY `fk_event_inode` (`inode`,`typ`,`id`),
   constraint `fk_event_inode` foreign key(`inode`) references `inode`(`id`) on delete restrict,
   constraint `fk_event_node` foreign key(`node`) references `node`(`id`) on delete cascade
 ) DEFAULT CHARSET=binary;
 insert into info(name,value) values('rangelen','1023');
 insert into `event` (`id`,`inode`,`node`,`typ`) values (1,1,1,'i');
 
-alter table `inode` add constraint `fk_inode_event` foreign key(`event`) references `event`(`id`) on delete restrict;
+alter table `inode` add constraint `fk_inode_event` foreign key(`event`) references `event`(`id`) on delete set null;
+alter table `cache` add constraint `fk_cache_event` foreign key(`event`) references `event`(`id`) on delete set null;
 
 
 -- 
@@ -217,7 +220,7 @@ CREATE TABLE `todo` (
   `node` int(10) unsigned NOT NULL, -- my ID
   `missing` int(10) unsigned NULL default NULL, -- wait for reachability
   `inode` bigint(20) unsigned NOT NULL, -- the data I'm copying
-  `typ` char character set ascii, -- 'f'ilesync, 'd'elete
+  `typ` char character set ascii, -- 'f'ilesync, 'd'elete, 't'rim
   PRIMARY KEY (`id`),
   KEY `fk_todo_inode` (`inode`),
   UNIQUE KEY `fk_todo_nodei` (`node`,`inode`),

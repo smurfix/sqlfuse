@@ -9,7 +9,7 @@
 
 from __future__ import division, absolute_import
 
-__all__ = ("SqlInode","flush_inodes")
+__all__ = ("SqlInode","flush_inodes","build_path")
 
 BLOCKSIZE = 4096
 DB_RETRIES = 5
@@ -28,7 +28,7 @@ from twisted.internet.threads import deferToThread
 from twisted.python import log
 from twisted.spread import pb
 
-from sqlfuse import nowtuple,log_call,flag2mode, trace,tracer_info
+from sqlfuse import nowtuple,log_call,flag2mode, trace,tracer_info,tracers
 
 from sqlfuse.range import Range
 from sqlmix.twisted import NoData
@@ -57,6 +57,36 @@ mode_type[stat.S_IFSOCK] = 12 # DT_SOCK
 tracer_info['fs']="file system details"
 tracer_info['rw']="read/write-level calls"
 tracer_info['cache']="get remote files"
+tracer_info['conflict']="inode update conflict (enabled)"
+tracers.add('conflict')
+
+
+def build_path(store,inode, create=True):
+	fp = []
+	CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+	ino = inode % 100
+	inode //= 100
+	while inode:
+		if inode <= len(CHARS): # first 'digit' cannot be 'zero'
+			fp.insert(0,CHARS[inode-1])
+			break
+		fp.insert(0,CHARS[inode % len(CHARS)])
+		inode //= len(CHARS)
+	p = os.path.join(store, *fp)
+	if create and not os.path.exists(p):
+		try:
+			os.makedirs(p, 0o700)
+		except EnvironmentError as e:
+			if e.errno != errno.EEXIST:
+				raise
+		# otherwise we have two threads trying to do the same thing,
+		# for different cache objects, which is not a problem
+	if ino < 10:
+		ino = "0"+str(ino)
+	else:
+		ino = str(ino)
+	return os.path.join(p, ino)
 
 class NotKnown:
 	pass
@@ -71,6 +101,7 @@ _Cache = WeakValueDictionary()
 class Cache(object,pb.Referenceable):
 	file_closer = None
 	file = None
+	write_event = None
 
 	@property
 	def node(self):
@@ -80,6 +111,7 @@ class Cache(object,pb.Referenceable):
 	def __new__(cls,tree,node):
 		if not isinstance(node,int):
 			node = node.nodeid
+			# we don't keep a link to the inode, to prevent circular references
 		self = _Cache.get(node,None)
 		if self is None:
 			self = object.__new__(cls)
@@ -88,15 +120,16 @@ class Cache(object,pb.Referenceable):
 
 	def __init__(self,tree,node):
 		if self.nodeid is not None:
+			# got it from cache
 			return
 		if not isinstance(node,int):
 			node = node.nodeid
-		self.tree = tree
-		self.nodeid = node
+		self.tree = tree # filesystem
+		self.nodeid = node # inode ID
 		self.q = []
-		self.known = None
-		self.available = None
-		self.in_progress = Range()
+		self.known = None # ranges from all nodes
+		self.available = None # ranges available on this node
+		self.in_progress = Range() # ranges sought from another node
 		self.lock = Lock() # protect file read/write
 
 	def __del__(self):
@@ -149,35 +182,30 @@ class Cache(object,pb.Referenceable):
 			self.known = Range(cache)
 			self.available = self.known.filter(None)
 
+	@inlineCallbacks
+	def _save(self,db):
+		if self.nodeid is None:
+			return
+
+		event = self.write_event
+		self.write_event = None
+		db.call_rolledback(setattr,self,'write_event',event)
+
+		if self.cache_id is None:
+			trace('cacherecord',"new for inode %d: ev=%s range=%s",self.nodeid, event or "-", str(self.known))
+			ev1=",event" if event else ""
+			ev2=",${event}" if event else ""
+			self.cache_id = yield db.Do("insert into cache(cached,inode,node"+ev1+") values (${data},${inode},${node}"+ev2+")", inode=self.nodeid, node=self.tree.node_id, data=self.known.encode(), event=event)
+		else:
+			trace('cacherecord',"old for inode %d: ev=%s range=%s",self.nodeid, event or "-", str(self.known))
+			ev=",event=${event}" if event else ""
+			yield db.Do("update cache set cached=${data}"+ev+" where id=${cache}", cache=self.cache_id, data=self.known.encode(), event=event, _empty=True)
+
 	def _file_path(self):
 		"""\
 			Return the path to my backing-store file.
 			"""
-		fp = []
-		CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-		inode = self.nodeid
-		ino = inode % 100
-		inode //= 100
-		while inode:
-			if inode <= len(CHARS): # first 'digit' cannot be 'zero'
-				fp.insert(0,CHARS[inode-1])
-				break
-			fp.insert(0,CHARS[inode % len(CHARS)])
-			inode //= len(CHARS)
-		p = os.path.join(self.tree.store, *fp)
-		if not os.path.exists(p):
-			try:
-				os.makedirs(p, 0o700)
-			except EnvironmentError as e:
-				if e.errno != errno.EEXIST:
-					raise
-			# otherwise we have two threads trying to do the same thing,
-			# for different cache objects, which is not a problem
-		if ino < 10:
-			ino = "0"+str(ino)
-		else:
-			ino = str(ino)
-		return os.path.join(p, ino)
+		return build_path(self.tree.store,self.nodeid)
 
 	def _read(self,offset,length):
 		with self.lock:
@@ -229,26 +257,30 @@ class Cache(object,pb.Referenceable):
 		"""\
 			Data arrives.
 			"""
+		if self.tree.readonly:
+			return
 		if self.file_closer:
-			self.file_closer.cancel()
-			self.file_closer = None
+			self.file_closer.reset(10)
 		yield reactor.callInThread(self._write,offset,data)
 		yield self.has(offset,offset+len(data))
 
-	def trim(self,end):
+	def trim(self,end, do_file=True):
 		r = Range()
 		if end > 0:
 			r.add(0,end)
-		trace('fs',"%s: trim to %d",self.nodeid,end)
+		trace('fs' if do_file else 'cache',"%s: trim to %d",self.nodeid,end)
 		self.known &= r
 		self.available &= r
 		self.tree.changer.note(self)
-		return deferToThread(self._trim,0)
+		if do_file:
+			return deferToThread(self._trim,0)
 
 	def has(self,offset,end):
 		"""\
 			Note that a data block has arrived.
 			"""
+		if self.tree.readonly:
+			return
 		self.in_progress.delete(offset,end)
 		self.known.add(offset,end)
 		chg = self.available.add(offset,end)
@@ -271,6 +303,8 @@ class Cache(object,pb.Referenceable):
 		r = Range([(offset,offset+length)])
 		missing = r - self.available
 		while missing:
+			if self.tree.readonly:
+				returnValue( False )
 			todo = missing - self.in_progress
 			if todo:
 				trace('cache',"%s: fetch %s", self.nodeid, todo)
@@ -319,7 +353,6 @@ class SqlInode(Inode):
 #		'nodeid',        # inode number
 #		'seq',           # database update tracking
 #		'attrs',         # dictionary of current attributes (size etc.)
-#		'old_size',      # inode size, as stored in the database
 #		'updated',       # set of attributes not yet written to disk
 #		'seq',           # change sequence# on-disk
 #		'timestamp',     # time the attributes have been read from disk
@@ -336,7 +369,8 @@ class SqlInode(Inode):
 		yield self._save(db)
 		if self.cache:
 			yield self.cache._close()
-		del self.filesystem.nodes[self.nodeid]
+		try: del self.filesystem.nodes[self.nodeid]
+		except KeyError: pass
 
 	# ___ FUSE methods ___
 
@@ -368,7 +402,9 @@ class SqlInode(Inode):
 
 	def setattr(self, **attrs):
 		size = attrs.get('size',None)
-		if size is not None and self.cache and self.size != size:
+		if size is not None:
+			self.filesystem.record.trim(self.node)
+		if size is not None and self.cache and self.size > size:
 			dtrim = self.cache.trim(size)
 		else:
 			dtrim = None
@@ -693,17 +729,22 @@ class SqlInode(Inode):
 		if not self.nodeid:
 			return "<SInode>"
 		if not self.seq:
-			return "<SInode %d>" % (self.nodeid)
+			return "<SInode%s %d>" % (typ,self.nodeid)
 		cache = self.cache
-		if not cache:
-			cache = "-C"
-		elif cache.known is None:
-			cache = "??"
+		if self.typ == "f":
+			typ = ""
 		else:
-			cache = str(cache.known)
+			typ = ":"+self.typ
+
+		if not cache:
+			cache = ""
+		elif cache.known is None:
+			cache = " ??"
+		else:
+			cache = " "+str(cache.known)
 		if not self.updated:
-			return "<SInode %d:%d %s>" % (self.nodeid, self.seq, cache)
-		return "<SInode %d:%d (%s) %s>" % (self.nodeid, self.seq, " ".join(sorted(self.updated)), cache)
+			return "<SInode%s %d:%d%s>" % (typ,self.nodeid, self.seq, cache)
+		return "<SInode%s %d:%d (%s)%s>" % (typ,self.nodeid, self.seq, " ".join(sorted(self.updated.keys())), cache)
 	__str__=__repr__
 
 	def __hash__(self):
@@ -755,6 +796,8 @@ class SqlInode(Inode):
 		self.changes = Range()
 		self.cache = NotKnown
 		self.load_lock = DeferredLock()
+		self._saving = False
+		self._saveq = []
 		_InodeList.append(self)
 		# defer anything we only need when loaded to after _load is called
 
@@ -775,7 +818,7 @@ class SqlInode(Inode):
 				returnValue( None )
 
 			self.attrs = {}
-			self.updated = set()
+			self.updated = {} # old values
 
 			for k in inode_xattrs:
 				if k.endswith("time"):
@@ -785,12 +828,11 @@ class SqlInode(Inode):
 				self.attrs[k] = v
 			self.seq = d["seq"]
 			self.size = d["size"]
-			self.old_size = d["size"]
 			self.timestamp = nowtuple()
 
 			if self.cache is NotKnown:
 				self.cache = None
-				if self.typ == 'f':
+				if self.typ == mode_char[stat.S_IFREG]:
 					self.cache = Cache(self.filesystem,self)
 					yield self.cache._load(db)
 		finally:
@@ -812,9 +854,31 @@ class SqlInode(Inode):
 		else:
 			assert not isinstance(value,tuple)
 		if self.attrs[key] != value:
+			if key not in self.updated:
+				self.updated[key] = self.attrs[key]
 			self.attrs[key] = value
-			self.updated.add(key)
 			self.filesystem.ichanger.note(self)
+
+	# We can't use a DeferredLock here because the "done" callback will run at the end of the transaction,
+	# but we might still need to re-enter the thing within the same transaction
+	def _save_done(self,db):
+		if self._saving != db:
+			raise RuntimeError("inode _save releasing")
+		self._saving = None
+		if self._saveq:
+			self._saveq.pop(0).callback(None)
+	def _up_seq(self,n):
+		self.seq = n
+	def _up_args(self,updated,d):
+		for k in inode_xattrs:
+			if k.endswith("time"):
+				v = (d[k],d[k+"_ns"])
+			else:
+				v = d[k]
+			if k in self.updated: # new old value
+				self.updated[k] = v
+			elif k not in updated: # updated and unchanged value
+				self.attrs[k] = v
 
 	@inlineCallbacks
 	def _save(self, db, new_seq=None):
@@ -824,15 +888,31 @@ class SqlInode(Inode):
 
 		if not self.updated and not self.changes:
 			return
+		if self._saving is not None and self._saving != db:
+			d = Deferred()
+			self._saveq.append(d)
+			trace('fs',"%s: save lock",self)
+			yield d
+			trace('fs',"%s: save lock",self)
+			if self._saving is not None:
+				raise RuntimeError("inode _save locking")
+		elif self.saving is not None:
+			trace('fs',"%s: save reentered",self)
+		if not self.updated and not self.changes:
+			return
+		do_release = (self._saving is None)
+		self._saving = db
+
 		args = {}
-		for f in self.updated:
-			if f.endswith("time"):
+		for f in self.updated.keys():
+			if f.endswith('time'):
 				v=self.attrs[f]
 				args[f]=v[0]
-				args[f+"_ns"]=v[1]
+				args[f+'_ns']=v[1]
 			else:
 				args[f]=self.attrs[f]
-		self.updated = set()
+		updated = self.updated
+		self.updated = {}
 
 		if self.changes:
 			ch = self.changes.encode()
@@ -847,31 +927,65 @@ class SqlInode(Inode):
 				yield db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.nodeid, seq=self.seq, **args)
 			except NoData:
 				try:
-					seq,self.size = yield db.DoFn("select seq,size from inode where id=${inode}", inode=self.nodeid)
+					d = yield db.DoFn("select for update * from inode where id=${inode}", inode=self.nodeid, _dict=True)
 				except NoData:
 					# deleted inode
-					trace('fs',"!!! inode_deleted %s %s %s",self.nodeid,self.seq,self.updated)
+					trace('conflict',"inode_deleted %s %s %s",self.nodeid,self.seq,",".join(sorted(updated.keys())))
 					del self.filesystem.nodes[self.nodeid]
 					self.nodeid = None
 				else:
-					# warn
-					trace('fs',"!!! inode_changed %s %s %s %s %s",self.nodeid,self.seq,seq,new_seq,repr(args))
 					if new_seq:
-						assert new_seq == seq+1
+						if new_seq != d['seq']+1:
+							raise NoData
 					else:
-						new_seq=seq+1
-					yield db.Do("update inode set seq=${new_seq}, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.nodeid, seq=seq, new_seq=new_seq, **args)
-					self.seq = seq+1
+						if seq >= d['seq']:
+							raise NoData
+						new_seq=d['seq']+1
+					trace('fs',"%s: inode_changed seq=%s old=%s new=%s",self,self.seq,d['seq'],new_seq)
+					for k,v in updated:
+						if k in ('event','size'):
+							# always use the latest event / largest file size
+							if self[k] < d[k]:
+								self[k] = d[k]
+								del args[k]
+						elif k.endswith('time'):
+							# Timestamps only increase, so that's no conflict
+							if self[k] < d[k]:
+								self[k] = d[k]
+								del args[k]
+								del args[k+'_ns']
+						else:
+							if self[k] != d[k] and d[k] != v:
+								# three-way difference. Annoy the user.
+								trace('conflict',"%d: %s k=%s old=%s loc=%s rem=%s",self.nodeid,k,v,self[k],d[k])
 
+					if args:
+						yield db.Do("update inode set seq=${new_seq}, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.nodeid, seq=seq, new_seq=new_seq, **args)
+						db.call_committed(self._up_seq,new_seq)
+					else:
+						db.call_committed(self._up_seq,d["seq"])
+
+					# now update the rest
+					db.call_committed(self._up_args,updated,d)
 			else:
+				db.call_committed(self._up_seq,seq+1)
+
 				self.seq += 1
-			if "size" in args and self.size != self.old_size:
-				def do_size():
-					self.filesystem.rooter.d_size(self.old_size,self.attrs["size"])
-					self.old_size = self.size
-				db.call_committed(do_size)
+			if "size" in args:
+				db.call_committed(self.filesystem.rooter.d_size,updated["size"],self.attrs["size"])
+
+			def re_upd(self):
+				for k,v in updated:
+					if k not in self.updated:
+						self.updated[k]=v
+			db.call_rolledback(re_upd)
+
 		if ch:
-			self.filesystem.record.change(self,ch)
+			db.call_committed(self.filesystem.record.change,self,ch)
+
+		if do_release:
+			db.call_committed(self._save_done,db)
+			db.call_rolledback(self._save_done,db)
 
 		returnValue( None )
 
@@ -977,6 +1091,9 @@ class SqlFile(File):
 	def write(self, offset,buf, ctx=None):
 		"""Write file, updating mtime, possibly updating size"""
 		# TODO: use fstat() for size info, access may be concurrent
+		if self.node.filesystem.readonly:
+			trace('rw',"%d: write %d @ %d: readonly", self.node.nodeid,len(buf), offset)
+			raise OSError(errno.EROFS)
 		trace('rw',"%d: write %d @ %d", self.node.nodeid,len(buf), offset)
 
 		yield deferToThread(self.node.cache._write,offset,buf)

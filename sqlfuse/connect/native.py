@@ -98,6 +98,8 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 			res = yield factory.login(NodeCredentials(fs.db, fs.node_id,self.node.node_id))
 			self._connector = None
 			if not res:
+				self.disconnect()
+				self.disconnected()
 				raise NoConnection
 			self.connected(res)
 		except err.ConnectionRefusedError:

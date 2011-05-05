@@ -21,7 +21,7 @@ from twisted.internet import reactor,threads
 from twisted.internet.defer import Deferred
 from twisted.python import log
 
-DBVERSION = "0.5.2"
+DBVERSION = "0.5.3"
 
 ManholeEnv = {}
 

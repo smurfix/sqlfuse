@@ -1,3 +1,9 @@
+python-sqlfuse (0.6.0-1) unstable; urgency=low
+
+  * Completely reorganized updating from the event log.
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Thu, 05 May 2011 14:16:25 +0200
+
 python-sqlfuse (0.5.25-1) unstable; urgency=low
 
   * make inode flushing on shutdown actually work

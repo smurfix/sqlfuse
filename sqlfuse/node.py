@@ -26,10 +26,10 @@ from zope.interface import implements
 from twisted.python import log,failure
 from twisted.spread import pb
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks,Deferred
+from twisted.internet.defer import inlineCallbacks
 from twisted.internet import error as err
 
-from sqlfuse import trace,tracer_info
+from sqlfuse import trace,tracer_info, triggeredDefer
 from sqlfuse.connect import INode
 from sqlfuse.fs import SqlInode,DB_RETRIES
 from sqlmix import NoData
@@ -87,6 +87,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		self.retry_timer = None
 		if self._server or self._connector:
 			return
+		trace('remote',"Trying to connect to node %d",self.node_id)
 		d = self.connect()
 		def grab_nolink(r):
 			r.trap(NoLink)
@@ -120,9 +121,8 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		if self._server:
 			return # already done
 		if self._connector: # in progress: wait for it
-			d = Deferred()
-			self._connector.chainDeferred(d)
-			yield d
+			trace('remote',"Chain connect to node %d",self.node_id)
+			yield triggeredDefer(self._connector)
 			return
 		try:
 			with self.filesystem.db() as db:
@@ -133,12 +133,9 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				m = __import__("sqlfuse.connect."+m, fromlist=('NodeClient',))
 			m = m.NodeClient(self)
 			self._connector = m.connect()
-
 			# Do this to avoid having a single Deferred both in the inline
 			# callback chain and as a possible cancellation point
-			d = Deferred()
-			self._connector.chainDeferred(d)
-			yield d
+			yield triggeredDefer(self._connector)
 			assert self._server is not None
 		except NoLink:
 			raise
@@ -196,6 +193,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		if self.echo_timer is not None:
 			self.echo_timer.cancel()
 		self.echo_timer = reactor.callLater(ECHO_TIMER,self.server_echo)
+		self.tree.copier.trigger()
 
 	def server_disconnected(self, server):
 		if self._server is server:

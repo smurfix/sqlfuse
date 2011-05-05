@@ -21,11 +21,12 @@ TODO: It's a protocol. Treat it as such.
 """
 
 import errno, os, stat, sys
+import traceback
 from twistfuse.filesystem import FileSystem
 from twistfuse.kernel import FUSE_ATOMIC_O_TRUNC,FUSE_ASYNC_READ,FUSE_EXPORT_SUPPORT,FUSE_BIG_WRITES
 from twisted.application.service import MultiService
 from twisted.internet import reactor
-from twisted.python import log
+from twisted.python import log,failure
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
 from sqlfuse import DBVERSION,nowtuple, trace,tracer_info
@@ -99,6 +100,7 @@ class SqlFuse(FileSystem):
 
 	db = DummyQuit()
 	servers = []
+	readonly = True
 
 	# 0: no atime; 1: only if <mtime; 2: always
 	atime = 1
@@ -408,6 +410,7 @@ class SqlFuse(FileSystem):
 	
 	@inlineCallbacks
 	def umount(self):
+		self.readonly = True
 		if self.shutting_down:
 			trace('shutdown',"called twice")
 			return
@@ -439,6 +442,7 @@ class SqlFuse(FileSystem):
 			trace('shutdown',"done")
 		except Exception as e:
 			log.err(e,"Shutting down")
+			traceback.print_exc()
 			
 	
 	@inlineCallbacks
