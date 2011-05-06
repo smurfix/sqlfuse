@@ -23,8 +23,8 @@ from weakref import WeakValueDictionary
 from twistfuse.filesystem import Inode,File,Dir
 from twistfuse.kernel import XATTR_CREATE,XATTR_REPLACE
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, Deferred, succeed
-from twisted.internet.threads import deferToThread
+from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, Deferred, succeed, DeferredSemaphore
+from twisted.internet.threads import deferToThread, blockingCallFromThread
 from twisted.python import log
 from twisted.spread import pb
 
@@ -60,6 +60,9 @@ tracer_info['cache']="get remote files"
 tracer_info['conflict']="inode update conflict (enabled)"
 tracers.add('conflict')
 
+# TODO: forcibly close an old file if we reach this limit
+# (This requires an ordered hash, i.e. either Py2.7 or reinventing the wheel)
+nFiles = DeferredSemaphore(500)
 
 def build_path(store,inode, create=True):
 	fp = []
@@ -102,6 +105,7 @@ class Cache(object,pb.Referenceable):
 	file_closer = None
 	file = None
 	write_event = None
+	in_use = 0
 
 	@property
 	def node(self):
@@ -140,6 +144,7 @@ class Cache(object,pb.Referenceable):
 
 	@inlineCallbacks
 	def _maybe_close(self):
+		assert self.in_use == 0
 		if self._last_file < time()-5 or self.node.fs.shutting_down:
 			self.file_closer = None
 			yield self._close()
@@ -152,6 +157,7 @@ class Cache(object,pb.Referenceable):
 			self.file_closer.cancel()
 			self.file_closer = None
 		yield reactor.callInThread(self._fclose)
+		nFiles.release()
 
 	def _fclose(self):
 		with self.lock:
@@ -209,13 +215,11 @@ class Cache(object,pb.Referenceable):
 
 	def _read(self,offset,length):
 		with self.lock:
-			self._have_file("read")
 			self.file.seek(offset)
 			return self.file.read(length)
 
 	def _write(self,offset,data):
 		with self.lock:
-			self._have_file("write")
 			self.file.seek(offset)
 			self.file.write(data)
 
@@ -226,7 +230,6 @@ class Cache(object,pb.Referenceable):
 
 	def _trim(self,size):
 		with self.lock:
-			self._have_file("trim")
 			self.file.truncate(size)
 
 	def _sync(self, flags):
@@ -236,6 +239,33 @@ class Cache(object,pb.Referenceable):
 					os.fdatasync(self.file.fileno())
 				else:
 					os.fsync(self.file.fileno())
+
+	@inlineCallbacks
+	def have_file(self, reason):
+		if not self.file:
+			assert self.in_use == 0
+			try:
+				yield nFiles.acquire()
+				yield deferToThread(self._have_file,reason)
+			except:
+				nFiles.release()
+				raise
+		elif self.file_closer:
+			assert self.in_use == 0
+			self.file_closer.cancel()
+			self.file_closer = None
+		else:
+			assert self.in_use > 0
+		self.in_use += 1
+		self._last_file = time()
+
+	def timeout_file(self):
+		assert self.in_use > 0
+		assert self.file is not None
+		assert self.file_closer is None
+		self.in_use -= 1
+		if not self.in_use:
+			self.file_closer = reactor.callLater(15,self._maybe_close)
 
 	def _have_file(self, reason):
 		if not self.file:
@@ -248,9 +278,6 @@ class Cache(object,pb.Referenceable):
 					raise
 				self.file = open(ipath,"w+")
 				trace('fs',"%d: open file %s for %s (new)", self.inum,ipath,reason)
-			if not self.file_closer:
-				self.file_closer = reactor.callLater(15,self._maybe_close)
-		self._last_file = time()
 
 	@inlineCallbacks
 	def remote_data(self, offset, data):
@@ -261,9 +288,10 @@ class Cache(object,pb.Referenceable):
 			return
 		if self.file_closer:
 			self.file_closer.reset(10)
-		yield reactor.callInThread(self._write,offset,data)
+		yield self.write(offset,data)
 		yield self.has(offset,offset+len(data))
 
+	@inlineCallbacks
 	def trim(self,end, do_file=True):
 		r = Range()
 		if end > 0:
@@ -273,7 +301,28 @@ class Cache(object,pb.Referenceable):
 		self.available &= r
 		self.fs.changer.note(self)
 		if do_file:
-			return deferToThread(self._trim,0)
+			try:
+				yield self.have_file()
+				yield deferToThread(self._trim,0)
+			finally:
+				self.timeout_file()
+
+	@inlineCallbacks
+	def write(self,offset,data):
+		try:
+			yield self.have_file("write")
+			yield deferToThread(self._write,offset,data)
+		finally:
+			self.timeout_file()
+
+	@inlineCallbacks
+	def read(self, offset,length):
+		try:
+			yield self.have_file("read")
+			res = yield deferToThread(self._read,offset,length)
+		finally:
+			self.timeout_file()
+		returnValue( res )
 
 	def has(self,offset,end):
 		"""\
@@ -1118,7 +1167,7 @@ class SqlFile(File):
 			if not res:
 				trace('rw',"%d: error (no cached data)", self.node.inum)
 				raise NoCachedData(self.node.inum)
-			data = yield deferToThread(cache._read,offset,length)
+			data = yield cache.read(offset,length)
 			trace('rw',"%d: return %d (cached)", self.node.inum,len(data))
 		else:
 			data = yield deferToThread(_read,offset,length)
@@ -1135,7 +1184,7 @@ class SqlFile(File):
 			raise OSError(errno.EROFS)
 		trace('rw',"%d: write %d @ %d", self.node.inum,len(buf), offset)
 
-		yield deferToThread(self.node.cache._write,offset,buf)
+		yield self.node.cache.write(offset,buf)
 		end = offset+len(buf)
 		if self.node.cache:
 			yield self.node.cache.has(offset,end)
