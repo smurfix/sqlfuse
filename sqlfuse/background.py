@@ -605,7 +605,7 @@ class CopyWorker(BackgroundJob):
 		super(CopyWorker,self).__init__(tree)
 	
 	@inlineCallbacks
-	def fetch(self):
+	def fetch(self,db):
 		trace('copyrun',"job start")
 		while self.running:
 			i = yield self._queue.get()
@@ -622,7 +622,7 @@ class CopyWorker(BackgroundJob):
 					raise RuntimeError("inode %s: no cache"%(str(inode),))
 			except NoLink as e:
 				trace('copyrun',"Missing %d: %d",inode.nodeid,e.nodeid)
-				yield self.tree.db(lambda db: db.Do("replace into todo(node,inode,typ,missing) values(${node},${inode},'f',${missing})", node=self.tree.node_id,inode=inode.nodeid, missing=e.nodeid), DB_RETRIES)
+				yield db.Do("replace into todo(node,inode,typ,missing) values(${node},${inode},'f',${missing})", node=self.tree.node_id,inode=inode.nodeid, missing=e.nodeid)
 				self.tree.missing_neighbors.add(e.nodeid)
 				
 			except Exception as e:
@@ -630,16 +630,13 @@ class CopyWorker(BackgroundJob):
 				trace('copyrun',"Failure copying %d: %s",inode.nodeid,f)
 				reason = f.getTraceback()
 				try:
-					yield self.tree.db(lambda db: db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason), DB_RETRIES)
+					yield db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason)
 				except Exception as ex:
 					log.err(f,"Problem fetching file")
 			else:
 				trace('copyrun',"Copied %d: %s",inode.nodeid,repr(inode.cache))
-				@inlineCallbacks
-				def did_fetch(db):
-					yield db.Do("delete from todo where id=${id}", id=id)
-					yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
-				yield self.tree.db(did_fetch, DB_RETRIES)
+				yield db.Do("delete from todo where id=${id}", id=id)
+				yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
 #			finally:
 #				yield inode.cache._close()
 		trace('copyrun',"job exit2")
@@ -686,48 +683,51 @@ class CopyWorker(BackgroundJob):
 		nworkers = len(entries)//5+1
 		if nworkers > self.nworkers:
 			nworkers = self.nworkers
-		for i in range(nworkers):
-			d = self.fetch()
-			d.addErrback(log.err,"fetch()")
-			defs.append(d)
 
-		workers = set()
-		for id,inum,typ in entries:
-			if not self.running:
-				break
-			trace('copyrun',"%d: %s",inum,typ)
+		def do_work2(db):
+			for i in range(nworkers):
+				d = self.fetch(db)
+				d.addErrback(log.err,"fetch()")
+				defs.append(d)
 
-			self.last_entry = id
+			workers = set()
+			for id,inum,typ in entries:
+				if not self.running:
+					break
+				trace('copyrun',"%d: %s",inum,typ)
 
-			if typ == 'd':
-				def dt(inum):
-					path = build_path(self.tree.store,inum, create=False)
-					try:
-						os.unlink(path)
-					except EnvironmentError as e:
-						if e.errno != errno.ENOENT:
-							raise
-				yield deferToThread(dt,inum)
-			else:
-				inode = SqlInode(self.tree,inum)
-				yield self.tree.db(inode._load, DB_RETRIES)
-				if typ == 'f':
-					if inum in workers:
-						trace('copyrun',"%d: in workers",inum,typ)
-						continue
-					workers.add(inum)
-					self._queue.put((id,inode))
-				elif typ == 't':
-					if inode.cache:
-						yield inode.cache.trim(inode.size)
+				self.last_entry = id
+
+				if typ == 'd':
+					def dt(inum):
+						path = build_path(self.tree.store,inum, create=False)
+						try:
+							os.unlink(path)
+						except EnvironmentError as e:
+							if e.errno != errno.ENOENT:
+								raise
+					yield deferToThread(dt,inum)
 				else:
-					raise RuntimeError("Typ '%s' not found (inode %d)" % (typ,inum))
-				continue
+					inode = SqlInode(self.tree,inum)
+					inode._load(db)
+					if typ == 'f':
+						if inum in workers:
+							trace('copyrun',"%d: in workers",inum,typ)
+							continue
+						workers.add(inum)
+						self._queue.put((id,inode))
+					elif typ == 't':
+						if inode.cache:
+							yield inode.cache.trim(inode.size)
+					else:
+						raise RuntimeError("Typ '%s' not found (inode %d)" % (typ,inum))
+					continue
 
-		for i in range(nworkers):
-			self._queue.put(None)
-		yield DeferredList(defs)
-		trace('copyrun',"done until %d",self.last_entry)
+			for i in range(nworkers):
+				self._queue.put(None)
+			yield DeferredList(defs)
+		yield self.tree.db(do_work2)
+		trace('copyrun',"done until %s",self.last_entry)
 		self._queue = None
 
 		
