@@ -605,10 +605,10 @@ class CopyWorker(BackgroundJob):
 		super(CopyWorker,self).__init__(tree)
 	
 	@inlineCallbacks
-	def fetch(self,db):
+	def fetch(self,db,queue):
 		trace('copyrun',"job start")
 		while self.running:
-			i = yield self._queue.get()
+			i = yield queue.get()
 			if not i:
 				trace('copyrun',"job exit")
 				return
@@ -678,15 +678,17 @@ class CopyWorker(BackgroundJob):
 		trace('copyrun',"%d items",len(entries))
 		if self.running:
 			self.restart = True
-		self._queue = DeferredQueue()
-		defs = []
-		nworkers = len(entries)//5+1
-		if nworkers > self.nworkers:
-			nworkers = self.nworkers
 
+		@inlineCallbacks
 		def do_work2(db):
+			queue = DeferredQueue()
+			defs = []
+			nworkers = len(entries)//5+1
+			if nworkers > self.nworkers:
+				nworkers = self.nworkers
+
 			for i in range(nworkers):
-				d = self.fetch(db)
+				d = self.fetch(db,queue)
 				d.addErrback(log.err,"fetch()")
 				defs.append(d)
 
@@ -709,13 +711,13 @@ class CopyWorker(BackgroundJob):
 					yield deferToThread(dt,inum)
 				else:
 					inode = SqlInode(self.tree,inum)
-					inode._load(db)
+					yield inode._load(db)
 					if typ == 'f':
 						if inum in workers:
 							trace('copyrun',"%d: in workers",inum,typ)
 							continue
 						workers.add(inum)
-						self._queue.put((id,inode))
+						queue.put((id,inode))
 					elif typ == 't':
 						if inode.cache:
 							yield inode.cache.trim(inode.size)
@@ -724,10 +726,9 @@ class CopyWorker(BackgroundJob):
 					continue
 
 			for i in range(nworkers):
-				self._queue.put(None)
+				queue.put(None)
 			yield DeferredList(defs)
 		yield self.tree.db(do_work2)
 		trace('copyrun',"done until %s",self.last_entry)
-		self._queue = None
 
 		
