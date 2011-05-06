@@ -74,7 +74,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 
 	def connect_timer(self):
 		self.retry_timer = None
-		if self._server or self._connector:
+		if self._server or self._connector or self.node_id is None:
 			return
 		trace('remote',"Trying to connect to node %d",self.node_id)
 		d = self.connect()
