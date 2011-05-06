@@ -28,9 +28,9 @@ from twisted.internet.threads import deferToThread
 from twisted.python import log
 from twisted.spread import pb
 
-from sqlfuse import nowtuple,log_call,flag2mode, trace,tracer_info,tracers
-
+from sqlfuse import nowtuple,log_call,flag2mode, trace,tracer_info,tracers, NoLink
 from sqlfuse.range import Range
+
 from sqlmix.twisted import NoData
 
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
@@ -300,23 +300,34 @@ class Cache(object,pb.Referenceable):
 		"""\
 			Check if the given data record is available.
 			"""
+		repeat = 0
 		r = Range([(offset,offset+length)])
 		missing = r - self.available
 		while missing:
 			if self.tree.readonly:
 				returnValue( False )
+			unavail = missing - self.known
+			if unavail: # requested data unavailable, don't bother
+				trace('cache',"%s: unavalable %s", self.nodeid, unavail)
+				returnValue( False )
 			todo = missing - self.in_progress
 			if todo:
+				repeat += 10
 				trace('cache',"%s: fetch %s", self.nodeid, todo)
 				# One option: ask each node for 'their' data, then do
 				# another pass asking all of them for whatever is missing.
 				# However, it's much simpler (and causes less load overall)
 				# to just ask every node for everything, in order of proximity.
-				def chk():
-					return not (todo - self.known)
+				def chk(_=None):
+					"""Test whether all data are here; if so, don't continue"""
+					return not (todo - self.available)
 				self.in_progress += todo
 				try:
-					yield self.node.filesystem.each_node(chk,"readfile",self.nodeid,self,todo)
+					res = yield self.node.filesystem.each_node(chk,"readfile",self.nodeid,self,todo)
+				except NoLink as e:
+					if repeat >= 20 and (r - self.available):
+						trace('cache',"%s: no link to %s", self.nodeid, str(e.nodeid) if e.nodeid else "?")
+						raise
 				except Exception as e:
 					trace('cache',"%s: error: %s", self.nodeid, e)
 					raise
@@ -324,6 +335,7 @@ class Cache(object,pb.Referenceable):
 					self.in_progress -= todo
 
 			else:
+				repeat += 1
 				trace('cache',"%s: wait for %s", self.nodeid, missing)
 				assert missing & self.in_progress
 				q = Deferred()
@@ -801,6 +813,17 @@ class SqlInode(Inode):
 		_InodeList.append(self)
 		# defer anything we only need when loaded to after _load is called
 
+	def missing(self, start,end):
+		"""\
+			The system has determined that some data could not be found
+			anywhere.
+			"""
+		if not self.cache:
+			return
+		r = Range([(start,end)]) - self.cache.available
+		self.cache.known -= r
+		self.filesystem.changer.note(self.cache)
+
 	@inlineCallbacks
 	def _load(self, db):
 		"""Load attributes from storage"""
@@ -836,6 +859,7 @@ class SqlInode(Inode):
 					yield self.cache._load(db)
 				else:
 					self.cache = None
+
 		finally:
 			self.load_lock.release()
 		returnValue( None )
@@ -871,6 +895,7 @@ class SqlInode(Inode):
 	def _up_seq(self,n):
 		self.seq = n
 	def _up_args(self,updated,d):
+		if not self.nodeid: return
 		for k in inode_xattrs:
 			if k.endswith("time"):
 				v = (d[k],d[k+"_ns"])
@@ -1076,7 +1101,10 @@ class SqlFile(File):
 		self.node.do_atime()
 		cache = self.node.cache
 		if cache:
-			res = yield cache.get_data(offset,length)
+			try:
+				res = yield cache.get_data(offset,length)
+			except NoLink:
+				res = None
 			if not res:
 				trace('rw',"%d: error (no cached data)", self.node.nodeid)
 				raise NoCachedData(self.node.nodeid)

@@ -12,7 +12,7 @@ from __future__ import division, print_function, absolute_import
 __all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker","InodeCleaner","InodeWriter")
 
 from collections import defaultdict
-import sys
+import os,sys
 
 from zope.interface import implements
 
@@ -23,11 +23,11 @@ from twisted.internet.threads import deferToThread
 from twisted.python import failure,log
 
 from sqlmix import NoData
-from sqlfuse import trace,tracer_info,triggeredDefer
+from sqlfuse import trace,tracer_info, triggeredDefer, NoLink, RemoteError
 from sqlfuse.fs import BLOCKSIZE,SqlInode,DB_RETRIES,build_path
+from sqlfuse.node import DataMissing
 from sqlfuse.range import Range
 from sqlfuse.topo import next_hops
-from sqlfuse.node import NoLink
 
 tracer_info['background']="Start/stop of background processing"
 # 'shutdown' is declared in sqlfuse.main
@@ -615,26 +615,42 @@ class CopyWorker(BackgroundJob):
 			id,inode = i
 
 			try:
-				trace('copyrun',"Start copying %d: %s",inode.nodeid,repr(inode.cache))
-				if inode.cache is not None:
-					yield inode.cache.get_data(0,inode.size)
-				else:
-					raise RuntimeError("inode %s: no cache"%(str(inode),))
-			except NoLink as e:
-				trace('copyrun',"Missing %d: %d",inode.nodeid,e.nodeid)
-				yield db.Do("replace into todo(node,inode,typ,missing) values(${node},${inode},'f',${missing})", node=self.tree.node_id,inode=inode.nodeid, missing=e.nodeid)
-				self.tree.missing_neighbors.add(e.nodeid)
-				
-			except Exception as e:
+				try:
+					trace('copyrun',"%d: Start copying: %s",inode.nodeid,repr(inode.cache))
+					if inode.cache is not None:
+						res = yield inode.cache.get_data(0,inode.size)
+						if not res:
+							trace('copyrun',"%d: Data unavailable", inode.nodeid)
+							yield db.Do("delete from todo where id=${id}", id=id)
+							continue
+					else:
+						raise RuntimeError("inode %s: no cache"%(str(inode),))
+				except NoLink as e:
+					trace('copyrun',"Missing %d: %s",inode.nodeid, str(e.nodeid) if e.nodeid else "?")
+					yield db.Do("replace into todo(node,inode,typ,missing) values(${node},${inode},'f',${missing})", node=self.tree.node_id,inode=inode.nodeid, missing=e.nodeid)
+					self.tree.missing_neighbors.add(e.nodeid)
+					continue
+					
+				except (RemoteError,DataMissing) as e:
+					if isinstance(e,RemoteError) and e.type != 'sqlfuse.node.DataMissing':
+						raise
+
+					# Gone with the wind.
+					inode.missing(0,inode.size)
+					trace('copyrun',"%d: Data missing", inode.nodeid)
+					yield db.Do("delete from todo where id=${id}", id=id)
+					continue
+
+			except Exception:
 				f = failure.Failure()
-				trace('copyrun',"Failure copying %d: %s",inode.nodeid,f)
+				trace('copyrun',"%d: Failure copying: %s",inode.nodeid,f)
 				reason = f.getTraceback()
 				try:
 					yield db.Do("replace into fail(node,inode,reason) values(${node},${inode},${reason})", node=self.tree.node_id,inode=inode.nodeid, reason=reason)
 				except Exception as ex:
 					log.err(f,"Problem fetching file")
 			else:
-				trace('copyrun',"Copied %d: %s",inode.nodeid,repr(inode.cache))
+				trace('copyrun',"%d: Copy done: %s",inode.nodeid,repr(inode.cache))
 				yield db.Do("delete from todo where id=${id}", id=id)
 				yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.tree.node_id,inode=inode.nodeid, _empty=True)
 #			finally:

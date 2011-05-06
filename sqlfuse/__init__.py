@@ -12,11 +12,12 @@ from __future__ import division, print_function, absolute_import
 import twist
 
 __all__ = ('nowtuple','log_call','flag2mode', 'DBVERSION', 'trace', 'tracers','tracer_info', 'ManholeEnv',
-'triggeredDefer')
+'triggeredDefer','NoLink')
 
 import datetime,errno,inspect,os,sys
 from threading import Lock
 
+import twist
 from twisted.internet import reactor,threads
 from twisted.internet.defer import Deferred
 from twisted.python import log
@@ -28,6 +29,8 @@ ManholeEnv = {}
 tracers = set()
 tracer_info = {'*':"everything", 'error':"brief error messages"}
 tracers.add('error')
+
+RemoteError = twist.RemoteError
 
 def trace(what,s,*a):
 	if what == "":
@@ -52,7 +55,18 @@ class Info(object):
 try:
 	errno.ENOATTR
 except AttributeError:
-	errno.ENOATTR=61 # TODO: this is Linux
+	errno.ENOATTR=61 # TODO: this is Linux i386
+
+class NoLink(RuntimeError):
+	"""\
+		There's no record for connecting to a remote node.
+		"""
+	def __init__(self,nodeid):
+		self.nodeid = nodeid
+	def __repr__(self):
+		return "<%s: %s>" % (self.__class__.__name__, str(self.nodeid) if self.nodeid else '?')
+	def __str__(self):
+		return "%s: %s" % (self.__class__.__name__, str(self.nodeid) if self.nodeid else '?')
 
 def nowtuple(offset=0):
 	"""Return the current time as (seconds-from-epoch,milliseconds) tuple."""

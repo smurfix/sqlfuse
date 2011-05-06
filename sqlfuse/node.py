@@ -17,7 +17,7 @@ Right now, only native interconnection is supported.
 
 """
 
-__all__ = ('SqlNode','NoLink','DataMissing','NoConnection')
+__all__ = ('SqlNode','DataMissing','NoConnection')
 
 import os
 
@@ -29,7 +29,7 @@ from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet import error as err
 
-from sqlfuse import trace,tracer_info, triggeredDefer
+from sqlfuse import trace,tracer_info, triggeredDefer, NoLink
 from sqlfuse.connect import INode
 from sqlfuse.fs import SqlInode,DB_RETRIES
 from sqlmix import NoData
@@ -47,17 +47,6 @@ class NoConnection(RuntimeError):
 		There's no connection to a remote node.
 		"""
 	pass
-
-class NoLink(RuntimeError):
-	"""\
-		There's no record for connecting to a remote node.
-		"""
-	def __init__(self,nodeid):
-		self.nodeid = nodeid
-	def __repr__(self):
-		return "<%s: %d>" % (self.__class__.__name__,self.nodeid)
-	def __str__(self):
-		return "%s: %d" % (self.__class__.__name__,self.nodeid)
 
 class DataMissing(BufferError):
 	"""\
@@ -118,6 +107,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		"""\
 			Try to connect to this node's remote side.
 			"""
+		assert self.node_id is not None
 		if self._server:
 			return # already done
 		if self._connector: # in progress: wait for it
@@ -136,7 +126,8 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			# Do this to avoid having a single Deferred both in the inline
 			# callback chain and as a possible cancellation point
 			yield triggeredDefer(self._connector)
-			assert self._server is not None
+			if self._server is None:
+				raise NoLink(self.node_id)
 		except NoLink:
 			raise
 		except Exception as e: # no connection
@@ -193,7 +184,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		if self.echo_timer is not None:
 			self.echo_timer.cancel()
 		self.echo_timer = reactor.callLater(ECHO_TIMER,self.server_echo)
-		self.tree.copier.trigger()
+		self.filesystem.copier.trigger()
 
 	def server_disconnected(self, server):
 		if self._server is server:
@@ -206,14 +197,14 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
 
 	def client_connected(self, client):
-		trace('remote',"Connected client to %d",self.node_id)
+		trace('remote',"Connected client from %d",self.node_id)
 		self._clients.add(client)
 
 	def client_disconnected(self, client):
 		try: self._clients.remove(client)
 		except (ValueError,KeyError): pass
 		else:
-			trace('remote',"Disconnected client to",self.node_id)
+			trace('remote',"Disconnected client from %d",self.node_id)
 
 
 	def disconnect(self):
@@ -221,6 +212,9 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			Drop this node: disconnect
 			"""
 		self.node_id = None
+		if self.echo_timer:
+			self.echo_timer.cancel()
+			self.echo_timer = None
 		r = self._server
 		if r is not None:
 			self._server = None
@@ -240,7 +234,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	def remote_echo(self,caller,msg):
 		return msg
 	
-	def remote_exec(self,caller,name,node,*a,**k):
+	def remote_exec(self,node,name,*a,**k):
 		if node not in self.filesystem.topology:
 			trace('remote',"NoLink remote %s %s %s %s %s",caller,node,name,repr(a),repr(k))
 			raise NoLink(node)
@@ -301,11 +295,6 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 						raise NoLink(self.node_id)
 				d.addCallback(check_link)
 				d.addCallback(lambda r: getattr(self._server,"do_"+name)(self,*a,**k))
-				def log_me(r):
-					if not r.check(NoLink):
-						log.err(r,"Calling "+name)
-					return r
-				d.addErrback(log_me)
 				return d
 			return _callout
 			

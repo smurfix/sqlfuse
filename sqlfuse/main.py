@@ -29,10 +29,10 @@ from twisted.internet import reactor
 from twisted.python import log,failure
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock
 
-from sqlfuse import DBVERSION,nowtuple, trace,tracer_info
+from sqlfuse import DBVERSION,nowtuple, trace,tracer_info, NoLink
 from sqlfuse.fs import SqlInode,SqlDir,SqlFile, BLOCKSIZE,DB_RETRIES,flush_inodes
 from sqlfuse.background import RootUpdater,InodeCleaner,Recorder,NodeCollector,InodeWriter,CacheRecorder,UpdateCollector,CopyWorker,IdleWorker
-from sqlfuse.node import SqlNode,NoLink,MAX_BLOCK
+from sqlfuse.node import SqlNode,MAX_BLOCK
 from sqlmix.twisted import DbPool,NoData
 
 tracer_info['shutdown']="Shutdown processing"
@@ -331,20 +331,17 @@ class SqlFuse(FileSystem):
 		#for dest in self.topology.keys():
 		for dest in self.neighbors:
 			try:
-				d = self.call_node(dest,name,*a,**k)
-				def pr(r):
-					log.err(repr(r),"EachNode %d: %s" % (dest,name))
-					return r
-				d.addErrback(pr)
-				res = yield d
+				res = yield self.call_node(dest,name,*a,**k)
 			except Exception:
-				if e is None:
-					e = sys.exc_info()
+				# If any link is down, that's the error I return.
+				en = sys.exc_info()
+				if e is None or isinstance(en[1],NoLink):
+					e = en
 			else:
-				if chk and chk():
-					returnValue(res)
+				if chk and chk(res):
+					returnValue( res )
 		if e is None:
-			raise NoLink("any node")
+			returnValue( None )
 		raise e[0],e[1],e[2]
 
 	@inlineCallbacks

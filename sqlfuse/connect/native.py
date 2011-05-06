@@ -102,7 +102,7 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 				self.disconnected()
 				raise NoConnection
 			self.connected(res)
-		except err.ConnectionRefusedError:
+		except (pb.PBConnectionLost,err.ConnectionRefusedError):
 			raise NoConnection
 		except Exception:
 			f = failure.Failure()
@@ -133,9 +133,6 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 			This is called by the node.
 			Thus, we don't call back to the node here.
 			"""
-		if self.node is None:
-			return # may be duplicate, since we're both client and server
-
 		if self._connector: # trying to connect?
 			self._connector.disconnect()
 			self._connector = None
@@ -143,16 +140,14 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 		if self.proxy: # connected?
 			self.proxy.broker.transport.loseConnection()
 			self.proxy = None
-		self.node = None
 
 	def disconnected(self,what=None):
 		"""\
 			The connection to the remote side is gone.
 			This is called by the remote adapter.
 			"""
-		if self.node:
-			self.node.client_disconnected(self)
-			self.node.server_disconnected(self)
+		self.node.client_disconnected(self)
+		self.node.server_disconnected(self)
 
 
 ##############
