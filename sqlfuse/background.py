@@ -52,7 +52,7 @@ class IdleWorker(object,Service):
 			dl = []
 			wl = self.workers
 			self.workers = set()
-			for w in wl:
+			for w in list(wl):
 				trace('shutdown',"IDLE start %s", w.__class__.__name__)
 				w.restart = False
 				d = maybeDeferred(w.work)
