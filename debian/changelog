@@ -1,3 +1,10 @@
+python-sqlfuse (0.6.1-1) unstable; urgency=low
+
+  * Rename inode.nodeid ⇒ inode.inum
+  * Rename .filesystem, .tree ⇒ .fs
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Fri, 06 May 2011 11:31:39 +0200
+
 python-sqlfuse (0.6.0-1) unstable; urgency=low
 
   * Completely reorganized updating from the event log.

@@ -61,12 +61,12 @@ class NoLink(RuntimeError):
 	"""\
 		There's no record for connecting to a remote node.
 		"""
-	def __init__(self,nodeid):
-		self.nodeid = nodeid
+	def __init__(self,node_id):
+		self.node_id = node_id
 	def __repr__(self):
-		return "<%s: %s>" % (self.__class__.__name__, str(self.nodeid) if self.nodeid else '?')
+		return "<%s: %s>" % (self.__class__.__name__, str(self.node_id) if self.node_id else '?')
 	def __str__(self):
-		return "%s: %s" % (self.__class__.__name__, str(self.nodeid) if self.nodeid else '?')
+		return "%s: %s" % (self.__class__.__name__, str(self.node_id) if self.node_id else '?')
 
 def nowtuple(offset=0):
 	"""Return the current time as (seconds-from-epoch,milliseconds) tuple."""

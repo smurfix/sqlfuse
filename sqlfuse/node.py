@@ -63,7 +63,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	implements(INode)
 	def __init__(self, filesystem, node_id):
 		self.node_id = node_id
-		self.filesystem = filesystem
+		self.fs = filesystem
 		self.retry_timeout = INITIAL_RETRY
 		self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
 		self.echo_timer = None
@@ -115,9 +115,9 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			yield triggeredDefer(self._connector)
 			return
 		try:
-			with self.filesystem.db() as db:
+			with self.fs.db() as db:
 				try:
-					m, = yield db.DoFn("select method from updater where src=${src} and dest=${dest}",src=self.filesystem.node_id,dest=self.node_id)
+					m, = yield db.DoFn("select method from updater where src=${src} and dest=${dest}",src=self.fs.node_id,dest=self.node_id)
 				except NoData:
 					raise NoLink(self.node_id)
 				m = __import__("sqlfuse.connect."+m, fromlist=('NodeClient',))
@@ -184,7 +184,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		if self.echo_timer is not None:
 			self.echo_timer.cancel()
 		self.echo_timer = reactor.callLater(ECHO_TIMER,self.server_echo)
-		self.filesystem.copier.trigger()
+		self.fs.copier.trigger()
 
 	def server_disconnected(self, server):
 		if self._server is server:
@@ -235,26 +235,26 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		return msg
 	
 	def remote_exec(self,node,name,*a,**k):
-		if node not in self.filesystem.topology:
+		if node not in self.fs.topology:
 			trace('remote',"NoLink remote %s %s %s %s %s",caller,node,name,repr(a),repr(k))
 			raise NoLink(node)
 
 		# TODO: cache calls to stuff like reading from a file
 		# TODO: prevent cycles
-		return self.filesystem.call_node(node,name,*a,**k)
+		return self.fs.call_node(node,name,*a,**k)
 
 	@inlineCallbacks
 	def remote_readfile(self,caller,inum,reader,missing):
-		node = SqlInode(self.filesystem,inum)
-		yield self.filesystem.db(node._load, DB_RETRIES)
-		if not node.nodeid:
+		inode = SqlInode(self.fs,inum)
+		yield self.fs.db(inode._load, DB_RETRIES)
+		if not inode.inum:
 			trace('remote',"Inode %d probably deleted",inum)
 			raise DataMissing(missing)
 
-		avail = node.cache.available & missing
+		avail = inode.cache.available & missing
 		if avail:
 			missing -= avail
-			h = yield node.open(os.O_RDONLY)
+			h = yield inode.open(os.O_RDONLY)
 			def split(av):
 				for a,b,c in av:
 					while b > MAX_BLOCK:

@@ -29,7 +29,7 @@ from sqlfuse.connector import SqlClientFactory,NodeCredentials
 class NodeClient(object):
 	def __init__(self, filesystem, node_id):
 		self.node = node_id
-		self.filesystem = filesystem
+		self.fs = filesystem
 
 	def connect(self):
 		raise NotImplementedError()

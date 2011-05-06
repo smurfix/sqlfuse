@@ -66,12 +66,12 @@ class RemoteDict(dict):
 		Note that actually connecting to them is a different problem.
 		"""
 	def __init__(self,filesystem):
-		self.filesystem = filesystem
+		self.fs = filesystem
 	def __getitem__(self, id):
 		try:
 			return dict.__getitem__(self,id)
 		except KeyError:
-			r = SqlNode(self.filesystem,id)
+			r = SqlNode(self.fs,id)
 			dict.__setitem__(self,id,r)
 			return r
 	def __setitem__(self, id, r):
@@ -194,7 +194,7 @@ class SqlFuse(FileSystem):
 			except EnvironmentError as e:
 				if e.errno != errno.ENOENT:
 					raise
-			yield db.Do("update tree set name=${nname},parent=${ninode} where name=${oname} and parent=${oinode}", nname=name_new, ninode=inode_new.nodeid, oname=name_old, oinode=inode_old.nodeid)
+			yield db.Do("update tree set name=${nname},parent=${ninode} where name=${oname} and parent=${oinode}", nname=name_new, ninode=inode_new.inum, oname=name_old, oinode=inode_old.inum)
 			def adj_size():
 				inode_old.mtime = nowtuple()
 				inode_old.size -= len(name_old)+1
@@ -358,7 +358,7 @@ class SqlFuse(FileSystem):
 		@inlineCallbacks
 		def do_init_db(db):
 			try:
-				self.node_id,self.root_id,self.inum,self.store,self.port = yield db.DoFn("select node.id,root.id,root.inode,node.files,node.port from node,root where root.id=node.root and node.name=${name}", name=node)
+				self.node_id,self.root_id,self.root_inum,self.store,self.port = yield db.DoFn("select node.id,root.id,root.inode,node.files,node.port from node,root where root.id=node.root and node.name=${name}", name=node)
 			except NoData:
 				raise RuntimeError("data for '%s' is missing"%(self.node,))
 
@@ -366,18 +366,18 @@ class SqlFuse(FileSystem):
 			self.single_node = not nnodes
 
 			try:
-				mode, = yield db.DoFn("select mode from inode where id=${inode}",inode=self.inum)
+				mode, = yield db.DoFn("select mode from inode where id=${inode}",inode=self.root_inum)
 			except NoData:
 				raise RuntimeError("database has not been initialized: inode %d is missing" % (self.inode,))
 			if mode == 0:
-				yield db.Do("update inode set mode=${dir} where id=${inode}", dir=stat.S_IFDIR|stat.S_IRWXU|stat.S_IRWXG|stat.S_IRWXO, inode=self.inum)
+				yield db.Do("update inode set mode=${dir} where id=${inode}", dir=stat.S_IFDIR|stat.S_IRWXU|stat.S_IRWXG|stat.S_IRWXO, inode=self.root_inum)
 		
 			self.info = Info()
 			yield self.info._load(db)
 			if self.info.version != DBVERSION:
 				raise RuntimeError("Need database version %s, got %s" % (DBVERSION,self.info.version))
 
-			root = SqlInode(self,self.inum)
+			root = SqlInode(self,self.root_inum)
 			yield root._load(db)
 			returnValue( root )
 

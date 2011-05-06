@@ -81,7 +81,7 @@ class NodeAdapter(pb.Avatar,pb.Referenceable):
 			The node tells me to connect to its remote side.
 			"""
 		try:
-			fs = self.node.filesystem
+			fs = self.node.fs
 			@inlineCallbacks
 			def do_connect(db):
 				conn, = yield db.DoFn("select args from updater where src=${src} and dest=${dest} and method='native'",src=fs.node_id,dest=self.node.node_id)
@@ -174,7 +174,7 @@ class SqlClientFactory(pb.PBClientFactory,object):
 	def __init__(self, node, filesystem):
 		super(SqlClientFactory,self).__init__(True)
 		self.node = node
-		self.filesystem = filesystem
+		self.fs = filesystem
 
 	def login(self, credentials):
 		"""
@@ -198,7 +198,7 @@ class SqlClientFactory(pb.PBClientFactory,object):
 
 	def _cbSendInfo2(self, res, creds):
 		(root2,challenge,res) = res
-		db = self.node.node.filesystem.db()
+		db = self.node.node.fs.db()
 		d = db.DoFn("select secret from node where id=${node}", node=creds.src)
 
 		def cbsi1(r):
@@ -247,13 +247,13 @@ class _Portal(object):
 	implements(pb.IPBRoot)
 	def __init__(self, portal, filesystem):
 		self.manhole_portal = portal
-		self.filesystem = filesystem
+		self.fs = filesystem
 
 	def rootObject(self, broker):
 		"""\
 			... so we return an object which supports exactly that.
 			"""
-		return _Login1Wrapper(self.manhole_portal, self.filesystem, broker)
+		return _Login1Wrapper(self.manhole_portal, self.fs, broker)
 
 class _Login1Wrapper(object,pb.Referenceable):
 	"""\
@@ -261,7 +261,7 @@ class _Login1Wrapper(object,pb.Referenceable):
 		"""
 	def __init__(self, portal, filesystem,broker):
 		self.manhole_portal = portal
-		self.filesystem = filesystem
+		self.fs = filesystem
 		self.broker = broker
 		self.dead = False
 
@@ -295,7 +295,7 @@ class _Login1Wrapper(object,pb.Referenceable):
 
 		self.src = src
 		self.dest = dest
-		fs = self.filesystem
+		fs = self.fs
 		if dest != fs.node_id or src == fs.node_id:
 			return failure.Failure(WrongNode())
 		db = fs.db()
@@ -344,7 +344,7 @@ class _Login2Wrapper(object,pb.Referenceable):
 		This node controls the second step of the login process.
 		"""
 	def __init__(self, old,c):
-		self.filesystem = old.filesystem
+		self.fs = old.fs
 		self.broker = old.broker
 		self.src = old.src
 		self.dest = old.dest
@@ -360,13 +360,13 @@ class _Login2Wrapper(object,pb.Referenceable):
 			return failure.Failure(RuntimeError("you already tried this. Shame on you."))
 		self.dead = True
 
-		db = self.filesystem.db()
+		db = self.fs.db()
 		d = db.DoFn("select secret from node where id=${node}", node=self.dest)
 		def cbsj2(r):
 			r, = r
 			if res != build_response(self.challenge,r):
 				return failure.Failure(error.UnauthorizedLogin())
-			self.node = NodeAdapter(self.filesystem.remote[self.src])
+			self.node = NodeAdapter(self.fs.remote[self.src])
 			return self.node.connected(avatar)
 		#def cbsj3(r):
 			#dd = avatar.callRemote("echo","baz xyzzy")
@@ -402,27 +402,27 @@ class NodeServerFactory(object):
 	implements(INodeServerFactory)
 
 	def __init__(self, filesystem):
-		self.filesystem = filesystem
+		self.fs = filesystem
 	
 	@inlineCallbacks
 	def connect(self):
 		ns = {}
 
 		from sqlfuse import fs
-		ns["fs"] = self.filesystem
+		ns["fs"] = self.fs
 		ns["inodes"] = fs._Inode
 		ns.update(ManholeEnv)
 
 		user="admin"
-		password,= yield self.filesystem.db(lambda db: db.DoFn("select `password` from node where id=${node}", node=self.filesystem.node_id), DB_RETRIES)
+		password,= yield self.fs.db(lambda db: db.DoFn("select `password` from node where id=${node}", node=self.fs.node_id), DB_RETRIES)
 		if password:
 			mp = portal.Portal( service.Realm(service.Service(True,ns)),
 			    [checkers.InMemoryUsernamePasswordDatabaseDontUse(**{user: password})])
 		else:
 			mp = None
 
-		p = _Portal(mp, self.filesystem)
-		self.listener = reactor.listenTCP(self.filesystem.port, pb.PBServerFactory(p))
+		p = _Portal(mp, self.fs)
+		self.listener = reactor.listenTCP(self.fs.port, pb.PBServerFactory(p))
 	
 	def disconnect(self):
 		if self.listener is not None:

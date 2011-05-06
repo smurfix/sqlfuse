@@ -105,12 +105,12 @@ class Cache(object,pb.Referenceable):
 
 	@property
 	def node(self):
-		return SqlInode(self.tree, self.nodeid)
+		return SqlInode(self.fs, self.inum)
 
 	nodeid = None
-	def __new__(cls,tree,node):
+	def __new__(cls,filesystem,node):
 		if not isinstance(node,int):
-			node = node.nodeid
+			node = node.inum
 			# we don't keep a link to the inode, to prevent circular references
 		self = _Cache.get(node,None)
 		if self is None:
@@ -118,14 +118,14 @@ class Cache(object,pb.Referenceable):
 			_Cache[node] = self
 		return self
 
-	def __init__(self,tree,node):
-		if self.nodeid is not None:
+	def __init__(self,filesystem,node):
+		if self.inum is not None:
 			# got it from cache
 			return
 		if not isinstance(node,int):
-			node = node.nodeid
-		self.tree = tree # filesystem
-		self.nodeid = node # inode ID
+			node = node.inum
+		self.fs = filesystem # filesystem
+		self.inum = node # inode ID
 		self.q = []
 		self.known = None # ranges from all nodes
 		self.available = None # ranges available on this node
@@ -140,7 +140,7 @@ class Cache(object,pb.Referenceable):
 
 	@inlineCallbacks
 	def _maybe_close(self):
-		if self._last_file < time()-5 or self.node.filesystem.shutting_down:
+		if self._last_file < time()-5 or self.node.fs.shutting_down:
 			self.file_closer = None
 			yield self._close()
 		else:
@@ -157,15 +157,15 @@ class Cache(object,pb.Referenceable):
 		with self.lock:
 			if not self.file:
 				return
-			trace('fs',"%d: close file", self.nodeid)
+			trace('fs',"%d: close file", self.inum)
 			self.file.close()
 			self.file = None
 
 	def __repr__(self):
 		if self.in_progress:
-			return "<C %d %s +%s>" % (self.nodeid,self.available,self.in_progress)
+			return "<C %d %s +%s>" % (self.inum,self.available,self.in_progress)
 		else:
-			return "<C %d %s>" % (self.nodeid,self.available)
+			return "<C %d %s>" % (self.inum,self.available)
 	__str__ = __repr__
 
 	@inlineCallbacks
@@ -173,7 +173,7 @@ class Cache(object,pb.Referenceable):
 		if self.known is not None:
 			return
 		try:
-			self.cache_id,cache = yield db.DoFn("select id,cached from cache where node=${node} and inode=${inum}", node=self.tree.node_id, inum=self.nodeid)
+			self.cache_id,cache = yield db.DoFn("select id,cached from cache where node=${node} and inode=${inum}", node=self.fs.node_id, inum=self.inum)
 		except NoData:
 			self.known = Range()
 			self.available = Range()
@@ -184,7 +184,7 @@ class Cache(object,pb.Referenceable):
 
 	@inlineCallbacks
 	def _save(self,db):
-		if self.nodeid is None:
+		if self.inum is None:
 			return
 
 		event = self.write_event
@@ -192,12 +192,12 @@ class Cache(object,pb.Referenceable):
 		db.call_rolledback(setattr,self,'write_event',event)
 
 		if self.cache_id is None:
-			trace('cacherecord',"new for inode %d: ev=%s range=%s",self.nodeid, event or "-", str(self.known))
+			trace('cacherecord',"new for inode %d: ev=%s range=%s",self.inum, event or "-", str(self.known))
 			ev1=",event" if event else ""
 			ev2=",${event}" if event else ""
-			self.cache_id = yield db.Do("insert into cache(cached,inode,node"+ev1+") values (${data},${inode},${node}"+ev2+")", inode=self.nodeid, node=self.tree.node_id, data=self.known.encode(), event=event)
+			self.cache_id = yield db.Do("insert into cache(cached,inode,node"+ev1+") values (${data},${inode},${node}"+ev2+")", inode=self.inum, node=self.fs.node_id, data=self.known.encode(), event=event)
 		else:
-			trace('cacherecord',"old for inode %d: ev=%s range=%s",self.nodeid, event or "-", str(self.known))
+			trace('cacherecord',"old for inode %d: ev=%s range=%s",self.inum, event or "-", str(self.known))
 			ev=",event=${event}" if event else ""
 			yield db.Do("update cache set cached=${data}"+ev+" where id=${cache}", cache=self.cache_id, data=self.known.encode(), event=event, _empty=True)
 
@@ -205,7 +205,7 @@ class Cache(object,pb.Referenceable):
 		"""\
 			Return the path to my backing-store file.
 			"""
-		return build_path(self.tree.store,self.nodeid)
+		return build_path(self.fs.store,self.inum)
 
 	def _read(self,offset,length):
 		with self.lock:
@@ -242,12 +242,12 @@ class Cache(object,pb.Referenceable):
 			ipath=self._file_path()
 			try:
 				self.file = open(ipath,"r+")
-				trace('fs',"%d: open file %s for %s", self.nodeid,ipath,reason)
+				trace('fs',"%d: open file %s for %s", self.inum,ipath,reason)
 			except EnvironmentError as e:
 				if e.errno != errno.ENOENT:
 					raise
 				self.file = open(ipath,"w+")
-				trace('fs',"%d: open file %s for %s (new)", self.nodeid,ipath,reason)
+				trace('fs',"%d: open file %s for %s (new)", self.inum,ipath,reason)
 			if not self.file_closer:
 				self.file_closer = reactor.callLater(15,self._maybe_close)
 		self._last_file = time()
@@ -257,7 +257,7 @@ class Cache(object,pb.Referenceable):
 		"""\
 			Data arrives.
 			"""
-		if self.tree.readonly:
+		if self.fs.readonly:
 			return
 		if self.file_closer:
 			self.file_closer.reset(10)
@@ -268,10 +268,10 @@ class Cache(object,pb.Referenceable):
 		r = Range()
 		if end > 0:
 			r.add(0,end)
-		trace('fs' if do_file else 'cache',"%s: trim to %d",self.nodeid,end)
+		trace('fs' if do_file else 'cache',"%s: trim to %d",self.inum,end)
 		self.known &= r
 		self.available &= r
-		self.tree.changer.note(self)
+		self.fs.changer.note(self)
 		if do_file:
 			return deferToThread(self._trim,0)
 
@@ -279,14 +279,14 @@ class Cache(object,pb.Referenceable):
 		"""\
 			Note that a data block has arrived.
 			"""
-		if self.tree.readonly:
+		if self.fs.readonly:
 			return
 		self.in_progress.delete(offset,end)
 		self.known.add(offset,end)
 		chg = self.available.add(offset,end)
 
 		if chg or self.available.equals(0,self.node.size,None):
-			self.tree.changer.note(self) # save in the database
+			self.fs.changer.note(self) # save in the database
 			self._trigger_waiters()
 
 	def _trigger_waiters(self):
@@ -304,16 +304,16 @@ class Cache(object,pb.Referenceable):
 		r = Range([(offset,offset+length)])
 		missing = r - self.available
 		while missing:
-			if self.tree.readonly:
+			if self.fs.readonly:
 				returnValue( False )
 			unavail = missing - self.known
 			if unavail: # requested data unavailable, don't bother
-				trace('cache',"%s: unavalable %s", self.nodeid, unavail)
+				trace('cache',"%s: unavalable %s", self.inum, unavail)
 				returnValue( False )
 			todo = missing - self.in_progress
 			if todo:
 				repeat += 10
-				trace('cache',"%s: fetch %s", self.nodeid, todo)
+				trace('cache',"%s: fetch %s", self.inum, todo)
 				# One option: ask each node for 'their' data, then do
 				# another pass asking all of them for whatever is missing.
 				# However, it's much simpler (and causes less load overall)
@@ -323,27 +323,27 @@ class Cache(object,pb.Referenceable):
 					return not (todo - self.available)
 				self.in_progress += todo
 				try:
-					res = yield self.node.filesystem.each_node(chk,"readfile",self.nodeid,self,todo)
+					res = yield self.node.fs.each_node(chk,"readfile",self.inum,self,todo)
 				except NoLink as e:
 					if repeat >= 20 and (r - self.available):
-						trace('cache',"%s: no link to %s", self.nodeid, str(e.nodeid) if e.nodeid else "?")
+						trace('cache',"%s: no link to %s", self.inum, str(e.node_id) if e.node_id else "?")
 						raise
 				except Exception as e:
-					trace('cache',"%s: error: %s", self.nodeid, e)
+					trace('cache',"%s: error: %s", self.inum, e)
 					raise
 				finally:
 					self.in_progress -= todo
 
 			else:
 				repeat += 1
-				trace('cache',"%s: wait for %s", self.nodeid, missing)
+				trace('cache',"%s: wait for %s", self.inum, missing)
 				assert missing & self.in_progress
 				q = Deferred()
 				self.q.append(q)
 				yield q
 
 			missing = r - self.available
-		trace('cache',"%s: ready", self.nodeid)
+		trace('cache',"%s: ready", self.inum)
 		returnValue( True )
 	
 
@@ -381,7 +381,7 @@ class SqlInode(Inode):
 		yield self._save(db)
 		if self.cache:
 			yield self.cache._close()
-		try: del self.filesystem.nodes[self.nodeid]
+		try: del self.fs.nodes[self.inum]
 		except KeyError: pass
 
 	# ___ FUSE methods ___
@@ -390,12 +390,12 @@ class SqlInode(Inode):
 		"""Read inode attributes from the database."""
 		@inlineCallbacks
 		def do_getattr(db):
-			res = {'ino':self.nodeid if self.nodeid != self.filesystem.inum else 1}
+			res = {'ino':self.inum if self.inum != self.fs.inum else 1}
 			if stat.S_ISDIR(self.mode): 
-				res['nlink'], = yield db.DoFn("select count(*) from tree,inode where tree.parent=${inode} and tree.inode=inode.id and inode.typ='d'",inode=self.nodeid)
+				res['nlink'], = yield db.DoFn("select count(*) from tree,inode where tree.parent=${inode} and tree.inode=inode.id and inode.typ='d'",inode=self.inum)
 				res['nlink'] += 2 ## . and ..
 			else:
-				res['nlink'], = yield db.DoFn("select count(*) from tree where inode=${inode}",inode=self.nodeid)
+				res['nlink'], = yield db.DoFn("select count(*) from tree where inode=${inode}",inode=self.inum)
 			for k in inode_attrs:
 				res[k] = self[k]
 # TODO count subdirectories
@@ -405,17 +405,17 @@ class SqlInode(Inode):
 			res['blksize'] = BLOCKSIZE
 
 			res = {'attr': res}
-			res['nodeid'] = self.nodeid
+			res['nodeid'] = self.inum
 			res['generation'] = 1 ## TODO: inodes might be recycled (depends on the database)
-			res['attr_valid'] = self.filesystem.ATTR_VALID
-			res['entry_valid'] = self.filesystem.ENTRY_VALID
+			res['attr_valid'] = self.fs.ATTR_VALID
+			res['entry_valid'] = self.fs.ENTRY_VALID
 			returnValue( res )
-		return self.filesystem.db(do_getattr, DB_RETRIES)
+		return self.fs.db(do_getattr, DB_RETRIES)
 
 	def setattr(self, **attrs):
 		size = attrs.get('size',None)
 		if size is not None:
-			self.filesystem.record.trim(self.node)
+			self.fs.record.trim(self.node)
 		if size is not None and self.cache and self.size > size:
 			dtrim = self.cache.trim(size)
 		else:
@@ -444,11 +444,11 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
 		"""Existing file."""
-		trace('fs',"%s: open file (%s)",self,self.filesystem.FileType)
-		yield self.filesystem.db(self._load, DB_RETRIES)
+		trace('fs',"%s: open file (%s)",self,self.fs.FileType)
+		yield self.fs.db(self._load, DB_RETRIES)
 		if stat.S_ISDIR(self.mode):
 			raise IOError(errno.EISDIR)
-		f = self.filesystem.FileType(self,flags)
+		f = self.fs.FileType(self,flags)
 		yield f.open()
 		trace('fs',"%s: opened file: %s",self,f)
 		returnValue( f )
@@ -458,7 +458,7 @@ class SqlInode(Inode):
 		"""Existing file."""
 		if not stat.S_ISDIR(self.mode):
 			raise IOError(errno.ENOTDIR)
-		d = self.filesystem.DirType(self)
+		d = self.fs.DirType(self)
 		yield d.open()
 		returnValue( d )
 
@@ -468,23 +468,23 @@ class SqlInode(Inode):
 		if name == ".":
 			returnValue( self )
 		elif name == "..":
-			if self.nodeid == self.filesystem.inum:
+			if self.inum == self.fs.inum:
 				returnValue( self )
 			try:
-				inum, = yield db.DoFn("select parent from tree where inode=${inode} limit 1", inode=self.nodeid)
+				inum, = yield db.DoFn("select parent from tree where inode=${inode} limit 1", inode=self.inum)
 			except NoData:
-				raise IOError(errno.ENOENT, "%d:%s" % (self.nodeid,name))
+				raise IOError(errno.ENOENT, "%d:%s" % (self.inum,name))
 		else:
 			try:
-				inum, = yield db.DoFn("select inode from tree where parent=${inode} and name=${name}", inode=self.nodeid, name=name)
+				inum, = yield db.DoFn("select inode from tree where parent=${inode} and name=${name}", inode=self.inum, name=name)
 			except NoData:
-				raise IOError(errno.ENOENT, "%d:%s" % (self.nodeid,name))
-		res = SqlInode(self.filesystem,inum)
+				raise IOError(errno.ENOENT, "%d:%s" % (self.inum,name))
+		res = SqlInode(self.fs,inum)
 		yield res._load(db)
 		returnValue( res )
 	    
 	def lookup(self, name):
-		return self.filesystem.db(lambda db: self._lookup(name,db), 5)
+		return self.fs.db(lambda db: self._lookup(name,db), 5)
 			
 	@inlineCallbacks
 	def create(self, name, flags,mode, umask, ctx=None):
@@ -492,18 +492,18 @@ class SqlInode(Inode):
 		@inlineCallbacks
 		def do_create(db):
 			try:
-				inum, = yield db.DoFn("select inode from tree where parent=${par} and name=${name}", par=self.nodeid,name=name)
+				inum, = yield db.DoFn("select inode from tree where parent=${par} and name=${name}", par=self.inum,name=name)
 			except NoData:
 				inode = yield self._new_inode(db, name,mode|stat.S_IFREG,ctx)
 			else:
 				if flags & os.O_EXCL:
 					raise IOError(errno.EEXIST)
-				inode = SqlInode(self.filesystem,inum)
+				inode = SqlInode(self.fs,inum)
 				yield inode._load(db)
 	
-			res = self.filesystem.FileType(inode, flags)
+			res = self.fs.FileType(inode, flags)
 			returnValue( (inode,res) )
-		inode,res = yield self.filesystem.db(do_create, DB_RETRIES)
+		inode,res = yield self.fs.db(do_create, DB_RETRIES)
 
 		# opens its own database connection and therefore must be outside
 		# the sub block, otherwise it'll not see the inner transaction
@@ -519,7 +519,7 @@ class SqlInode(Inode):
 		"""\
 			Helper to create a new named inode.
 			"""
-		if len(name) == 0 or len(name) > self.filesystem.info.namelen:
+		if len(name) == 0 or len(name) > self.fs.info.namelen:
 			raise IOError(errno.ENAMETOOLONG)
 		now,now_ns = nowtuple()
 		if rdev is None: rdev=0 # not NULL
@@ -530,11 +530,11 @@ class SqlInode(Inode):
 			self.size += len(name)+1
 		db.call_committed(adj_size)
 
-		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size,typ) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size},${typ})", root=self.filesystem.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size,typ=mode_char[stat.S_IFMT(mode)])
-		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.nodeid,name=name)
-		db.call_committed(self.filesystem.rooter.d_inode,1)
+		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size,typ) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size},${typ})", root=self.fs.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size,typ=mode_char[stat.S_IFMT(mode)])
+		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.inum,name=name)
+		db.call_committed(self.fs.rooter.d_inode,1)
 		
-		inode = SqlInode(self.filesystem,inum)
+		inode = SqlInode(self.fs,inum)
 		yield inode._load(db)
 		returnValue( inode )
 
@@ -543,12 +543,12 @@ class SqlInode(Inode):
 		"""\
 			Drop this node: save.
 			"""
-		yield self.filesystem.db(self._save, DB_RETRIES)
+		yield self.fs.db(self._save, DB_RETRIES)
 		returnValue (None)
 			
 	@inlineCallbacks
 	def unlink(self, name, ctx=None):
-		yield self.filesystem.db(lambda db: self._unlink(name,ctx=ctx,db=db), DB_RETRIES)
+		yield self.fs.db(lambda db: self._unlink(name,ctx=ctx,db=db), DB_RETRIES)
 		returnValue( None )
 
 	@inlineCallbacks
@@ -557,8 +557,8 @@ class SqlInode(Inode):
 		if stat.S_ISDIR(inode.mode):
 			raise IOError(errno.EISDIR)
 
-		yield db.Do("delete from tree where parent=${par} and name=${name}", par=self.nodeid,name=name)
-		cnt, = yield db.DoFn("select count(*) from tree where inode=${inode}", inode=inode.nodeid)
+		yield db.Do("delete from tree where parent=${par} and name=${name}", par=self.inum,name=name)
+		cnt, = yield db.DoFn("select count(*) from tree where inode=${inode}", inode=inode.inum)
 		if cnt == 0:
 			if not inode.defer_delete():
 				yield inode._remove(db)
@@ -578,18 +578,18 @@ class SqlInode(Inode):
 			inode = yield self._lookup(name,db)
 			if not stat.S_ISDIR(self.mode):
 				raise IOError(errno.ENOTDIR)
-			cnt, = yield db.DoFn("select count(*) from tree where parent=${inode}", inode=inode.nodeid)
+			cnt, = yield db.DoFn("select count(*) from tree where parent=${inode}", inode=inode.inum)
 			if cnt:
 				raise IOError(errno.ENOTEMPTY)
-			db.call_committed(self.filesystem.rooter.d_dir,-1)
+			db.call_committed(self.fs.rooter.d_dir,-1)
 			yield inode._remove(db)
-		return self.filesystem.db(do_rmdir, DB_RETRIES)
+		return self.fs.db(do_rmdir, DB_RETRIES)
 
 	@inlineCallbacks
 	def symlink(self, name, target, ctx=None):
-		if len(target) > self.filesystem.info.targetlen:
+		if len(target) > self.fs.info.targetlen:
 			raise IOError(errno.EDIR,"Cannot link a directory")
-		inode = yield self.filesystem.db(lambda db: self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,target=target), DB_RETRIES)
+		inode = yield self.fs.db(lambda db: self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,target=target), DB_RETRIES)
 		returnValue( inode )
 
 	def link(self, oldnode,target, ctx=None):
@@ -599,60 +599,60 @@ class SqlInode(Inode):
 				raise IOError(errno.ENAMETOOLONG,"target entry too long")
 			res = yield self._link(oldnode,target, ctx=ctx,db=db)
 			returnValue( res )
-		return self.filesystem.db(do_link, DB_RETRIES)
+		return self.fs.db(do_link, DB_RETRIES)
 
 	@inlineCallbacks
 	def _link(self, oldnode,target, ctx=None,db=None):
 		try:
-			yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=oldnode.nodeid,par=self.nodeid,name=target)
+			yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=oldnode.inum,par=self.inum,name=target)
 		except Exception:
-			raise IOError(errno.EEXIST, "%d:%s" % (self.nodeid,target))
+			raise IOError(errno.EEXIST, "%d:%s" % (self.inum,target))
 		self.mtime = nowtuple()
 		self.size += len(target)+1
 		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
 			
 
 	def mknod(self, name, mode, rdev, umask, ctx=None):
-		return self.filesystem.db(lambda db: self._new_inode(db,name,mode,ctx,rdev), DB_RETRIES)
+		return self.fs.db(lambda db: self._new_inode(db,name,mode,ctx,rdev), DB_RETRIES)
 
 	def mkdir(self, name, mode,umask, ctx=None):
 		@inlineCallbacks
 		def do_mkdir(db):
 			inode = yield self._new_inode(db,name,(mode&0o7777&~umask)|stat.S_IFDIR,ctx)
-			db.call_committed(self.filesystem.rooter.d_dir,1)
+			db.call_committed(self.fs.rooter.d_dir,1)
 			returnValue( inode )
-		return self.filesystem.db(do_mkdir, DB_RETRIES)
+		return self.fs.db(do_mkdir, DB_RETRIES)
 
 	@inlineCallbacks
 	def _remove(self,db):
 		entries = []
 		def app(parent,name):
 			entries.append((parent,name))
-		yield db.DoSelect("select parent,name from tree where inode=${inode}", inode=self.nodeid, _empty=True, _callback=app)
+		yield db.DoSelect("select parent,name from tree where inode=${inode}", inode=self.inum, _empty=True, _callback=app)
 		for p in entries:
 			p,name = p
-			p = SqlInode(self.filesystem,p)
+			p = SqlInode(self.fs,p)
 			yield p._load(db)
 			def adj_size(p):
 				p.mtime = nowtuple()
 				p.size -= len(name)+1
 			db.call_committed(adj_size,p)
-		yield db.Do("delete from tree where inode=${inode}", inode=self.nodeid, _empty=True)
-		if self.filesystem.single_node or not stat.S_ISREG(self.mode):
-			yield db.Do("delete from inode where id=${inode}", inode=self.nodeid)
-			yield db.call_committed(self.filesystem.rooter.d_inode,-1)
+		yield db.Do("delete from tree where inode=${inode}", inode=self.inum, _empty=True)
+		if self.fs.single_node or not stat.S_ISREG(self.mode):
+			yield db.Do("delete from inode where id=${inode}", inode=self.inum)
+			yield db.call_committed(self.fs.rooter.d_inode,-1)
 			if stat.S_ISREG(self.mode):
-				yield db.call_committed(self.filesystem.rooter.d_size,self.size,0)
+				yield db.call_committed(self.fs.rooter.d_size,self.size,0)
 		else:
-			self.filesystem.record.delete(self)
+			self.fs.record.delete(self)
 
 		yield deferToThread(self._os_unlink)
-		del self.filesystem.nodes[self.nodeid]
-		self.nodeid = None
+		del self.fs.nodes[self.inum]
+		self.inum = None
 		returnValue( None )
 
 	def _os_unlink(self):
-		if self.nodeid is None: return
+		if self.inum is None: return
 		if stat.S_ISREG(self.mode):
 			try:
 				os.unlink(self._file_path())
@@ -665,10 +665,10 @@ class SqlInode(Inode):
 			Rules for atime update.
 			"""
 		if is_dir:
-			if self.filesystem.diratime < is_dir: return
+			if self.fs.diratime < is_dir: return
 		else:
-			if not self.filesystem.atime: return
-			if self.filesystem.atime == 1 and self.atime > self.mtime: return
+			if not self.fs.atime: return
+			if self.fs.atime == 1 and self.atime > self.mtime: return
 		self.atime = nowtuple()
 
 	def _file_path(self):
@@ -678,58 +678,58 @@ class SqlInode(Inode):
 	def getxattr(self, name, ctx=None):
 		@inlineCallbacks
 		def do_getxattr(db):
-			nid = yield self.filesystem.xattr_id(name,db,False)
+			nid = yield self.fs.xattr_id(name,db,False)
 			if nid is None:
 				raise IOError(errno.ENOATTR)
 			try:
-				val, = yield db.DoFn("select value from xattr where inode=${inode} and name=${name}", inode=self.nodeid,name=nid)
+				val, = yield db.DoFn("select value from xattr where inode=${inode} and name=${name}", inode=self.inum,name=nid)
 			except NoData:
 				raise IOError(errno.ENOATTR)
 			returnValue( val )
-		return self.filesystem.db(do_getxattr, DB_RETRIES)
+		return self.fs.db(do_getxattr, DB_RETRIES)
 
 	def setxattr(self, name, value, flags, ctx=None):
-		if len(value) > self.filesystem.info.attrlen:
+		if len(value) > self.fs.info.attrlen:
 			raise IOError(errno.E2BIG)
 
 		@inlineCallbacks
 		def do_setxattr(db):
-			nid = yield self.filesystem.xattr_id(name,db,True)
+			nid = yield self.fs.xattr_id(name,db,True)
 			try:
-				yield db.Do("update xattr set value=${value},seq=seq+1 where inode=${inode} and name=${name}", inode=self.nodeid,name=nid,value=value)
+				yield db.Do("update xattr set value=${value},seq=seq+1 where inode=${inode} and name=${name}", inode=self.inum,name=nid,value=value)
 			except NoData:
 				if flags & XATTR_REPLACE:
 					raise IOError(errno.ENOATTR)
-				yield db.Do("insert into xattr (inode,name,value,seq) values(${inode},${name},${value},1)", inode=self.nodeid,name=nid,value=value)
+				yield db.Do("insert into xattr (inode,name,value,seq) values(${inode},${name},${value},1)", inode=self.inum,name=nid,value=value)
 			else: 
 				if flags & XATTR_CREATE:
 					raise IOError(errno.EEXIST)
 			returnValue( None )
-		return self.filesystem.db(do_setxattr, DB_RETRIES)
+		return self.fs.db(do_setxattr, DB_RETRIES)
 
 	def listxattrs(self, ctx=None):
 		@inlineCallbacks
 		def do_listxattrs(db):
 			res = []
-			i = yield db.DoSelect("select name from xattr where inode=${inode}", inode=self.nodeid, _empty=1,_store=1)
+			i = yield db.DoSelect("select name from xattr where inode=${inode}", inode=self.inum, _empty=1,_store=1)
 			for nid, in i:
-				name = yield self.filesystem.xattr_name(nid,db)
+				name = yield self.fs.xattr_name(nid,db)
 				res.append(name)
 			returnValue( res )
-		return self.filesystem.db(do_listxattrs, DB_RETRIES)
+		return self.fs.db(do_listxattrs, DB_RETRIES)
 
 	def removexattr(self, name, ctx=None):
 		@inlineCallbacks
 		def do_removexattr(db):
-			nid = self.filesystem.xattr_id(name, db,False)
+			nid = self.fs.xattr_id(name, db,False)
 			if nid is None:
 				raise IOError(errno.ENOATTR)
 			try:
-				yield db.Do("delete from xattr where inode=${inode} and name=${name}", inode=self.nodeid,name=nid)
+				yield db.Do("delete from xattr where inode=${inode} and name=${name}", inode=self.inum,name=nid)
 			except NoData:
 				raise IOError(errno.ENOATTR)
 			returnValue( None )
-		return self.filesystem.db(do_removexattr, DB_RETRIES)
+		return self.fs.db(do_removexattr, DB_RETRIES)
 
 	def readlink(self, ctx=None):
 		self.do_atime()
@@ -738,10 +738,10 @@ class SqlInode(Inode):
 	# ___ supporting stuff ___
 
 	def __repr__(self):
-		if not self.nodeid:
+		if not self.inum:
 			return "<SInode>"
 		if not self.seq:
-			return "<SInode%s %d>" % (typ,self.nodeid)
+			return "<SInode%s %d>" % (typ,self.inum)
 		cache = self.cache
 		if self.typ == "f":
 			typ = ""
@@ -755,35 +755,35 @@ class SqlInode(Inode):
 		else:
 			cache = " "+str(cache.known)
 		if not self.updated:
-			return "<SInode%s %d:%d%s>" % (typ,self.nodeid, self.seq, cache)
-		return "<SInode%s %d:%d (%s)%s>" % (typ,self.nodeid, self.seq, " ".join(sorted(self.updated.keys())), cache)
+			return "<SInode%s %d:%d%s>" % (typ,self.inum, self.seq, cache)
+		return "<SInode%s %d:%d (%s)%s>" % (typ,self.inum, self.seq, " ".join(sorted(self.updated.keys())), cache)
 	__str__=__repr__
 
 	def __hash__(self):
-		if self.nodeid:
-			return self.nodeid
+		if self.inum:
+			return self.inum
 		else:
 			return id(self)
 	
 	def __cmp__(self,other):
-		if self.nodeid is None or other.nodeid is None:
+		if self.inum is None or other.inum is None:
 			return id(self)-id(other)
 		else:
-			return self.nodeid-other.nodeid
+			return self.inum-other.inum
 	def __eq__(self,other):
 		if id(self)==id(other):
 			return True
 		if isinstance(other,SqlInode):
-			if self.nodeid and other and self.nodeid == other:
+			if self.inum and other and self.inum == other:
 				raise RuntimeError("two inodes have the same ID")
-		elif self.nodeid == other:
+		elif self.inum == other:
 			return True
 		return False
 
 	def __ne__(self,other):
 		if id(self)==id(other):
 			return False
-		if self.nodeid and other.nodeid and self.nodeid == other.nodeid:
+		if self.inum and other.inum and self.inum == other.inum:
 			raise RuntimeError("two inodes have the same ID")
 		return True
 
@@ -796,8 +796,8 @@ class SqlInode(Inode):
 		return self
 	def __init__(self,filesystem,nodeid):
 #		if isinstance(inum,SqlInode): return
-#		if self.nodeid is not None:
-#			assert self.nodeid == inum
+#		if self.inum is not None:
+#			assert self.inum == inum
 #			return
 		if getattr(self,"inuse",None) is not None: return
 		super(SqlInode,self).__init__(filesystem,nodeid)
@@ -822,21 +822,21 @@ class SqlInode(Inode):
 			return
 		r = Range([(start,end)]) - self.cache.available
 		self.cache.known -= r
-		self.filesystem.changer.note(self.cache)
+		self.fs.changer.note(self.cache)
 
 	@inlineCallbacks
 	def _load(self, db):
 		"""Load attributes from storage"""
 		yield self.load_lock.acquire()
 		try:
-			if not self.nodeid:
+			if not self.inum:
 				# probably deleted
 				return
 
 			if self.seq:
 				yield self._save(db)
 
-			d = yield db.DoFn("select * from inode where id=${inode}", inode=self.nodeid, _dict=True)
+			d = yield db.DoFn("select * from inode where id=${inode}", inode=self.inum, _dict=True)
 			if self.seq is not None and self.seq == d["seq"]:
 				returnValue( None )
 
@@ -855,7 +855,7 @@ class SqlInode(Inode):
 
 			if self.cache is NotKnown:
 				if self.typ == mode_char[stat.S_IFREG]:
-					self.cache = Cache(self.filesystem,self)
+					self.cache = Cache(self.fs,self)
 					yield self.cache._load(db)
 				else:
 					self.cache = None
@@ -882,7 +882,7 @@ class SqlInode(Inode):
 			if key not in self.updated:
 				self.updated[key] = self.attrs[key]
 			self.attrs[key] = value
-			self.filesystem.ichanger.note(self)
+			self.fs.ichanger.note(self)
 
 	# We can't use a DeferredLock here because the "done" callback will run at the end of the transaction,
 	# but we might still need to re-enter the thing within the same transaction
@@ -895,7 +895,7 @@ class SqlInode(Inode):
 	def _up_seq(self,n):
 		self.seq = n
 	def _up_args(self,updated,d):
-		if not self.nodeid: return
+		if not self.inum: return
 		for k in inode_xattrs:
 			if k.endswith("time"):
 				v = (d[k],d[k+"_ns"])
@@ -909,7 +909,7 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def _save(self, db, new_seq=None):
 		"""Save this inode's attributes"""
-		if not self.nodeid: return
+		if not self.inum: return
 		ch = None
 
 		if not self.updated and not self.changes:
@@ -950,15 +950,15 @@ class SqlInode(Inode):
 			try:
 				if new_seq:
 					raise NoData # don't even try
-				yield db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.nodeid, seq=self.seq, **args)
+				yield db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=self.seq, **args)
 			except NoData:
 				try:
-					d = yield db.DoFn("select for update * from inode where id=${inode}", inode=self.nodeid, _dict=True)
+					d = yield db.DoFn("select for update * from inode where id=${inode}", inode=self.inum, _dict=True)
 				except NoData:
 					# deleted inode
-					trace('conflict',"inode_deleted %s %s %s",self.nodeid,self.seq,",".join(sorted(updated.keys())))
-					del self.filesystem.nodes[self.nodeid]
-					self.nodeid = None
+					trace('conflict',"inode_deleted %s %s %s",self.inum,self.seq,",".join(sorted(updated.keys())))
+					del self.fs.nodes[self.inum]
+					self.inum = None
 				else:
 					if new_seq:
 						if new_seq != d['seq']+1:
@@ -983,10 +983,10 @@ class SqlInode(Inode):
 						else:
 							if self[k] != d[k] and d[k] != v:
 								# three-way difference. Annoy the user.
-								trace('conflict',"%d: %s k=%s old=%s loc=%s rem=%s",self.nodeid,k,v,self[k],d[k])
+								trace('conflict',"%d: %s k=%s old=%s loc=%s rem=%s",self.inum,k,v,self[k],d[k])
 
 					if args:
-						yield db.Do("update inode set seq=${new_seq}, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.nodeid, seq=seq, new_seq=new_seq, **args)
+						yield db.Do("update inode set seq=${new_seq}, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=seq, new_seq=new_seq, **args)
 						db.call_committed(self._up_seq,new_seq)
 					else:
 						db.call_committed(self._up_seq,d["seq"])
@@ -998,7 +998,7 @@ class SqlInode(Inode):
 
 				self.seq += 1
 			if "size" in args:
-				db.call_committed(self.filesystem.rooter.d_size,updated["size"],self.attrs["size"])
+				db.call_committed(self.fs.rooter.d_size,updated["size"],self.attrs["size"])
 
 			def re_upd(self):
 				for k,v in updated:
@@ -1007,7 +1007,7 @@ class SqlInode(Inode):
 			db.call_rolledback(re_upd)
 
 		if ch:
-			db.call_committed(self.filesystem.record.change,self,ch)
+			db.call_committed(self.fs.record.change,self,ch)
 
 		if do_release:
 			db.call_committed(self._save_done,db)
@@ -1032,7 +1032,7 @@ class SqlInode(Inode):
 		if self.inuse < 0:
 			self.inuse += 1
 			if self.inuse == 0:
-				return self.node.filesystem.db(self._remove, DB_RETRIES)
+				return self.node.fs.db(self._remove, DB_RETRIES)
 		elif self.inuse > 0:
 			self.inuse -= 1
 		else:
@@ -1078,7 +1078,7 @@ class SqlFile(File):
 		retry = False
 		if self.mode & os.O_TRUNC:
 			self.node.size = 0
-			self.node.filesystem.record.new(self.node)
+			self.node.fs.record.new(self.node)
 		elif mode[0] == "w":
 			retry = True
 			mode = "r+"
@@ -1090,13 +1090,13 @@ class SqlFile(File):
 	@inlineCallbacks
 	def read(self, offset,length, ctx=None):
 		"""Read file, updating atime"""
-		trace('rw',"%d: read %d @ %d, len %d", self.node.nodeid,length,offset,self.node.size)
+		trace('rw',"%d: read %d @ %d, len %d", self.node.inum,length,offset,self.node.size)
 		if offset >= self.node.size:
-			trace('rw',"%d: return nothing", self.node.nodeid)
+			trace('rw',"%d: return nothing", self.node.inum)
 			returnValue( "" )
 		if offset+length > self.node.size:
 			length = self.node.size-offset
-			trace('rw',"%d: return only %d", self.node.nodeid,length)
+			trace('rw',"%d: return only %d", self.node.inum,length)
 
 		self.node.do_atime()
 		cache = self.node.cache
@@ -1106,13 +1106,13 @@ class SqlFile(File):
 			except NoLink:
 				res = None
 			if not res:
-				trace('rw',"%d: error (no cached data)", self.node.nodeid)
-				raise NoCachedData(self.node.nodeid)
+				trace('rw',"%d: error (no cached data)", self.node.inum)
+				raise NoCachedData(self.node.inum)
 			data = yield deferToThread(cache._read,offset,length)
-			trace('rw',"%d: return %d (cached)", self.node.nodeid,len(data))
+			trace('rw',"%d: return %d (cached)", self.node.inum,len(data))
 		else:
 			data = yield deferToThread(_read,offset,length)
-			trace('rw',"%d: return %d", self.node.nodeid,len(data))
+			trace('rw',"%d: return %d", self.node.inum,len(data))
 
 		returnValue( data )
 
@@ -1120,10 +1120,10 @@ class SqlFile(File):
 	def write(self, offset,buf, ctx=None):
 		"""Write file, updating mtime, possibly updating size"""
 		# TODO: use fstat() for size info, access may be concurrent
-		if self.node.filesystem.readonly:
-			trace('rw',"%d: write %d @ %d: readonly", self.node.nodeid,len(buf), offset)
+		if self.node.fs.readonly:
+			trace('rw',"%d: write %d @ %d: readonly", self.node.inum,len(buf), offset)
 			raise OSError(errno.EROFS)
-		trace('rw',"%d: write %d @ %d", self.node.nodeid,len(buf), offset)
+		trace('rw',"%d: write %d @ %d", self.node.inum,len(buf), offset)
 
 		yield deferToThread(self.node.cache._write,offset,buf)
 		end = offset+len(buf)
@@ -1132,7 +1132,7 @@ class SqlFile(File):
 
 		self.node.mtime = nowtuple()
 		if self.node.size < end:
-			trace('rw',"%d: end now %d", self.node.nodeid, end)
+			trace('rw',"%d: end now %d", self.node.inum, end)
 			self.node.size = end
 		self.node.changes.add(offset,end)
 		self.writes += 1
@@ -1141,10 +1141,10 @@ class SqlFile(File):
 	@inlineCallbacks
 	def release(self, ctx=None):
 		"""The last process closes the file."""
-		yield self.node.filesystem.db(self.node._save, DB_RETRIES)
+		yield self.node.fs.db(self.node._save, DB_RETRIES)
 		yield self.node.clr_inuse()
 		if self.writes:
-			self.node.filesystem.record.finish_write(self.node)
+			self.node.fs.record.finish_write(self.node)
 		returnValue( None )
 
 	def flush(self,flags, ctx=None):
@@ -1212,7 +1212,7 @@ class SqlDir(Dir):
 	def read(self, callback, offset=0, ctx=None):
 		# We use the actual inode as offset, except for . and ..
 		# Fudge the value a bit so that there's no cycle.
-		tree = self.node.filesystem
+		tree = self.node.fs
 		self.node.do_atime(is_dir=1)
 		db = tree.db
 
@@ -1223,18 +1223,18 @@ class SqlDir(Dir):
 		# Since we send incremental results here, we can't restart.
 		with tree.db() as db:
 			if not offset:
-				_callback(".",self.node.mode,self.node.nodeid,1)
+				_callback(".",self.node.mode,self.node.inum,1)
 			if offset <= 1:
-				if self.node.nodeid == self.node.filesystem.inum:
-					_callback("..",self.node.mode,self.node.nodeid,2)
+				if self.node.inum == self.node.fs.inum:
+					_callback("..",self.node.mode,self.node.inum,2)
 				else:
 					try:
-						inum = yield db.DoFn("select '..', inode.mode, inode.id, 2 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.nodeid)
+						inum = yield db.DoFn("select '..', inode.mode, inode.id, 2 from tree,inode where tree.inode=${inode} and tree.parent=inode.id limit 1", inode=self.node.inum)
 					except NoData:
 						pass
 					else:
 						_callback(*inum)
-			yield db.DoSelect("select tree.name, inode.mode, inode.id, inode.id+2 from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.nodeid,offset=offset-2, _empty=True,_store=True, _callback=_callback)
+			yield db.DoSelect("select tree.name, inode.mode, inode.id, inode.id+2 from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.inum,offset=offset-2, _empty=True,_store=True, _callback=_callback)
 		returnValue( None )
 
 	@inlineCallbacks

@@ -30,7 +30,7 @@ from sqlfuse.connect import INode
 class TestClient(object):
 	implements(INode)
 	def __init__(self,filesystem):
-		self.filesystem = filesystem
+		self.fs = filesystem
 
 	def remote_echo(self, message):
 		print("ECHOS",message)
