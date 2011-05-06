@@ -831,10 +831,11 @@ class SqlInode(Inode):
 			self.timestamp = nowtuple()
 
 			if self.cache is NotKnown:
-				self.cache = None
 				if self.typ == mode_char[stat.S_IFREG]:
 					self.cache = Cache(self.filesystem,self)
 					yield self.cache._load(db)
+				else:
+					self.cache = None
 		finally:
 			self.load_lock.release()
 		returnValue( None )
