@@ -621,7 +621,7 @@ class CopyWorker(BackgroundJob):
 						res = yield inode.cache.get_data(0,inode.size)
 						if not res:
 							trace('copyrun',"%d: Data unavailable", inode.inum)
-							yield db.Do("delete from todo where id=${id}", id=id)
+							yield db.Do("delete from todo where id=${id}", id=id, _empty=True)
 							continue
 					else:
 						raise RuntimeError("inode %s: no cache"%(str(inode),))
@@ -638,7 +638,7 @@ class CopyWorker(BackgroundJob):
 					# Gone with the wind.
 					inode.missing(0,inode.size)
 					trace('copyrun',"%d: Data missing", inode.inum)
-					yield db.Do("delete from todo where id=${id}", id=id)
+					yield db.Do("delete from todo where id=${id}", id=id, _Empty=True)
 					continue
 
 			except Exception:
@@ -651,7 +651,7 @@ class CopyWorker(BackgroundJob):
 					log.err(f,"Problem fetching file")
 			else:
 				trace('copyrun',"%d: Copy done: %s",inode.inum,repr(inode.cache))
-				yield db.Do("delete from todo where id=${id}", id=id)
+				yield db.Do("delete from todo where id=${id}", id=id, _empty=True)
 				yield db.Do("delete from fail where node=${node} and inode=${inode}", node=self.fs.node_id,inode=inode.inum, _empty=True)
 #			finally:
 #				yield inode.cache._close()

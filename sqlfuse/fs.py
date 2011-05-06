@@ -23,7 +23,7 @@ from weakref import WeakValueDictionary
 from twistfuse.filesystem import Inode,File,Dir
 from twistfuse.kernel import XATTR_CREATE,XATTR_REPLACE
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, succeed
+from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, Deferred, succeed
 from twisted.internet.threads import deferToThread
 from twisted.python import log
 from twisted.spread import pb
@@ -34,7 +34,7 @@ from sqlfuse.range import Range
 from sqlmix.twisted import NoData
 
 inode_attrs = frozenset("size mode uid gid atime mtime ctime rdev".split())
-inode_xattrs = inode_attrs.union(frozenset("target".split()))
+inode_xattrs = inode_attrs.union(frozenset("target event".split()))
 
 mode_char={}
 mode_char[stat.S_IFBLK]  = 'b'
@@ -107,7 +107,7 @@ class Cache(object,pb.Referenceable):
 	def node(self):
 		return SqlInode(self.fs, self.inum)
 
-	nodeid = None
+	inum = None
 	def __new__(cls,filesystem,node):
 		if not isinstance(node,int):
 			node = node.inum
@@ -362,7 +362,7 @@ class SqlInode(Inode):
 	This represents an in-memory inode object.
 	"""
 #	__slots__ = [ \
-#		'nodeid',        # inode number
+#		'inum',          # inode number
 #		'seq',           # database update tracking
 #		'attrs',         # dictionary of current attributes (size etc.)
 #		'updated',       # set of attributes not yet written to disk
@@ -378,6 +378,8 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def _shutdown(self,db):
 		"""When shutting down, flush the inode from the system."""
+		if self.inum is None or self.seq is None:
+			return
 		yield self._save(db)
 		if self.cache:
 			yield self.cache._close()
@@ -390,7 +392,7 @@ class SqlInode(Inode):
 		"""Read inode attributes from the database."""
 		@inlineCallbacks
 		def do_getattr(db):
-			res = {'ino':self.inum if self.inum != self.fs.inum else 1}
+			res = {'ino':self.inum if self.inum != self.fs.root_inum else 1}
 			if stat.S_ISDIR(self.mode): 
 				res['nlink'], = yield db.DoFn("select count(*) from tree,inode where tree.parent=${inode} and tree.inode=inode.id and inode.typ='d'",inode=self.inum)
 				res['nlink'] += 2 ## . and ..
@@ -468,7 +470,7 @@ class SqlInode(Inode):
 		if name == ".":
 			returnValue( self )
 		elif name == "..":
-			if self.inum == self.fs.inum:
+			if self.inum == self.fs.root_inum:
 				returnValue( self )
 			try:
 				inum, = yield db.DoFn("select parent from tree where inode=${inode} limit 1", inode=self.inum)
@@ -808,7 +810,7 @@ class SqlInode(Inode):
 		self.changes = Range()
 		self.cache = NotKnown
 		self.load_lock = DeferredLock()
-		self._saving = False
+		self._saving = None
 		self._saveq = []
 		_InodeList.append(self)
 		# defer anything we only need when loaded to after _load is called
@@ -888,7 +890,9 @@ class SqlInode(Inode):
 	# but we might still need to re-enter the thing within the same transaction
 	def _save_done(self,db):
 		if self._saving != db:
+			trace('fs',"%s: save unlock error: %s %s",self,self._saving,db)
 			raise RuntimeError("inode _save releasing")
+		trace('fs',"%s: save unlock: %s",self,db)
 		self._saving = None
 		if self._saveq:
 			self._saveq.pop(0).callback(None)
@@ -917,101 +921,107 @@ class SqlInode(Inode):
 		if self._saving is not None and self._saving != db:
 			d = Deferred()
 			self._saveq.append(d)
-			trace('fs',"%s: save lock",self)
+			trace('fs',"%s: save lock wait",self)
 			yield d
-			trace('fs',"%s: save lock",self)
+			trace('fs',"%s: save lock done",self)
 			if self._saving is not None:
 				raise RuntimeError("inode _save locking")
-		elif self.saving is not None:
-			trace('fs',"%s: save reentered",self)
 		if not self.updated and not self.changes:
 			return
-		do_release = (self._saving is None)
-		self._saving = db
 
-		args = {}
-		for f in self.updated.keys():
-			if f.endswith('time'):
-				v=self.attrs[f]
-				args[f]=v[0]
-				args[f+'_ns']=v[1]
-			else:
-				args[f]=self.attrs[f]
-		updated = self.updated
-		self.updated = {}
-
-		if self.changes:
-			ch = self.changes.encode()
-			self.changes = Range()
+		if self._saving is None:
+			trace('fs',"%s: save locked",self)
+			self._saving = db
+			do_release = True
 		else:
-			ch = None
-
-		if args:
-			try:
-				if new_seq:
-					raise NoData # don't even try
-				yield db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=self.seq, **args)
-			except NoData:
-				try:
-					d = yield db.DoFn("select for update * from inode where id=${inode}", inode=self.inum, _dict=True)
-				except NoData:
-					# deleted inode
-					trace('conflict',"inode_deleted %s %s %s",self.inum,self.seq,",".join(sorted(updated.keys())))
-					del self.fs.nodes[self.inum]
-					self.inum = None
+			trace('fs',"%s: save reentered",self)
+			assert self._saving is db
+			do_release = False
+		try:
+			args = {}
+			for f in self.updated.keys():
+				if f.endswith('time'):
+					v=self.attrs[f]
+					args[f]=v[0]
+					args[f+'_ns']=v[1]
 				else:
-					if new_seq:
-						if new_seq != d['seq']+1:
-							raise NoData
-					else:
-						if seq >= d['seq']:
-							raise NoData
-						new_seq=d['seq']+1
-					trace('fs',"%s: inode_changed seq=%s old=%s new=%s",self,self.seq,d['seq'],new_seq)
-					for k,v in updated:
-						if k in ('event','size'):
-							# always use the latest event / largest file size
-							if self[k] < d[k]:
-								self[k] = d[k]
-								del args[k]
-						elif k.endswith('time'):
-							# Timestamps only increase, so that's no conflict
-							if self[k] < d[k]:
-								self[k] = d[k]
-								del args[k]
-								del args[k+'_ns']
-						else:
-							if self[k] != d[k] and d[k] != v:
-								# three-way difference. Annoy the user.
-								trace('conflict',"%d: %s k=%s old=%s loc=%s rem=%s",self.inum,k,v,self[k],d[k])
+					args[f]=self.attrs[f]
+			updated = self.updated
+			self.updated = {}
 
-					if args:
-						yield db.Do("update inode set seq=${new_seq}, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=seq, new_seq=new_seq, **args)
-						db.call_committed(self._up_seq,new_seq)
-					else:
-						db.call_committed(self._up_seq,d["seq"])
-
-					# now update the rest
-					db.call_committed(self._up_args,updated,d)
+			if self.changes:
+				ch = self.changes.encode()
+				self.changes = Range()
 			else:
-				db.call_committed(self._up_seq,seq+1)
+				ch = None
 
-				self.seq += 1
-			if "size" in args:
-				db.call_committed(self.fs.rooter.d_size,updated["size"],self.attrs["size"])
+			if args:
+				try:
+					if new_seq:
+						raise NoData # don't even try
+					yield db.Do("update inode set seq=seq+1, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=self.seq, **args)
+				except NoData:
+					try:
+						d = yield db.DoFn("select for update * from inode where id=${inode}", inode=self.inum, _dict=True)
+					except NoData:
+						# deleted inode
+						trace('conflict',"inode_deleted %s %s %s",self.inum,self.seq,",".join(sorted(updated.keys())))
+						del self.fs.nodes[self.inum]
+						self.inum = None
+					else:
+						if new_seq:
+							if new_seq != d['seq']+1:
+								raise NoData
+						else:
+							if seq >= d['seq']:
+								raise NoData
+							new_seq=d['seq']+1
+						trace('fs',"%s: inode_changed seq=%s old=%s new=%s",self,self.seq,d['seq'],new_seq)
+						for k,v in updated:
+							if k in ('event','size'):
+								# always use the latest event / largest file size
+								if self[k] < d[k]:
+									self[k] = d[k]
+									del args[k]
+							elif k.endswith('time'):
+								# Timestamps only increase, so that's no conflict
+								if self[k] < d[k]:
+									self[k] = d[k]
+									del args[k]
+									del args[k+'_ns']
+							else:
+								if self[k] != d[k] and d[k] != v:
+									# three-way difference. Annoy the user.
+									trace('conflict',"%d: %s k=%s old=%s loc=%s rem=%s",self.inum,k,v,self[k],d[k])
 
-			def re_upd(self):
-				for k,v in updated:
-					if k not in self.updated:
-						self.updated[k]=v
-			db.call_rolledback(re_upd)
+						if args:
+							yield db.Do("update inode set seq=${new_seq}, "+(", ".join("%s=${%s}"%(k,k) for k in args.keys()))+" where id=${inode} and seq=${seq}", inode=self.inum, seq=seq, new_seq=new_seq, **args)
+							db.call_committed(self._up_seq,new_seq)
+						else:
+							db.call_committed(self._up_seq,d["seq"])
 
-		if ch:
-			db.call_committed(self.fs.record.change,self,ch)
+						# now update the rest
+						db.call_committed(self._up_args,updated,d)
+				else:
+					db.call_committed(self._up_seq,self.seq+1)
 
-		if do_release:
-			db.call_committed(self._save_done,db)
-			db.call_rolledback(self._save_done,db)
+					self.seq += 1
+				if "size" in args:
+					db.call_committed(self.fs.rooter.d_size,updated["size"],self.attrs["size"])
+
+				def re_upd(self):
+					for k,v in updated:
+						if k not in self.updated:
+							self.updated[k]=v
+				db.call_rolledback(re_upd)
+
+			if ch:
+				db.call_committed(self.fs.record.change,self,ch)
+
+		finally:
+			if do_release:
+				db.call_committed(self._save_done,db)
+				db.call_rolledback(self._save_done,db)
 
 		returnValue( None )
 
@@ -1225,7 +1235,7 @@ class SqlDir(Dir):
 			if not offset:
 				_callback(".",self.node.mode,self.node.inum,1)
 			if offset <= 1:
-				if self.node.inum == self.node.fs.inum:
+				if self.node.inum == self.node.fs.root_inum:
 					_callback("..",self.node.mode,self.node.inum,2)
 				else:
 					try:
