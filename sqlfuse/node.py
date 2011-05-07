@@ -61,26 +61,32 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		requests on behalf of a client.
 		"""
 	implements(INode)
+
+	retry_timeout = INITIAL_RETRY
+	retry_timer = None
+
 	def __init__(self, filesystem, node_id):
 		self.node_id = node_id
 		self.fs = filesystem
-		self.retry_timeout = INITIAL_RETRY
-		self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
 		self.echo_timer = None
 		self._connector = None
-
 		self._server = None
 		self._clients = set()
 
+		self.queue_retry()
+
 	def connect_timer(self):
 		self.retry_timer = None
+
 		if self._server or self._connector or self.node_id is None:
+			if self.node_id:
+				trace('remote',"connect_timer: inprogress to node %d",self.node_id)
 			return
-		trace('remote',"Trying to connect to node %d",self.node_id)
 		d = self.connect()
 		def grab_nolink(r):
 			r.trap(NoLink)
-			trace('remote',"There is no way to connect to node %d",self.node_id)
+			trace('remote',"connect to node %d failed",self.node_id)
+			self.queue_retry()
 		d.addErrback(grab_nolink)
 		d.addErrback(lambda r: log.err(r,"Connection timer"))
 
@@ -95,11 +101,13 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			self.retry_timer = None
 		d = self.connect()
 		def retrier(r):
-			if self.retry_timer:
-				self.retry_timer.cancel()
-				self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
+			self.queue_retry()
+			trace('remote',"Error: will retry %d",self.node_id)
 			return r
 		d.addErrback(retrier)
+		def rep(r):
+			trace('remote',"connect_retry: no error to %d",self.node_id)
+		d.addCallback(rep)
 		return d
 
 	@inlineCallbacks
@@ -114,6 +122,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			trace('remote',"Chain connect to node %d",self.node_id)
 			yield triggeredDefer(self._connector)
 			return
+		trace('remote',"Connecting to node %d",self.node_id)
 		try:
 			with self.fs.db() as db:
 				try:
@@ -136,19 +145,24 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			else:
 				f = failure.Failure()
 				log.err(f,"Connecting remote")
-			self.retry_timeout *= 1.3
-			if self.retry_timeout > MAX_RETRY:
-				self.retry_timeout = MAX_RETRY
-			self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
+			self.queue_retry()
 		finally:
 			self._connector = None
+
+	def queue_retry(self):
+		if self.retry_timer or not self.node_id:
+			return
+		self.retry_timeout *= 1.3
+		if self.retry_timeout > MAX_RETRY:
+			self.retry_timeout = MAX_RETRY
+		self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
 
 	def disconnect_retry(self):
 		if self._server:
 			self._server.disconnect()
 			self._server = None
-		if not self._connector and not self.retry_timer:
-			self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
+		if not self._connector:
+			self.queue_retry()
 
 	def server_no_echo(self):
 		self.echo_timer = None
@@ -193,8 +207,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				self.echo_timer.cancel()
 				self.echo_timer = None
 			trace('remote',"Disconnected server to %d",self.node_id)
-			if self.node_id is not None:
-				self.retry_timer = reactor.callLater(self.retry_timeout, self.connect_timer)
+			queue_retry()
 
 	def client_connected(self, client):
 		trace('remote',"Connected client from %d",self.node_id)

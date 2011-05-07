@@ -453,7 +453,7 @@ class NodeCollector(BackgroundJob):
 				d = self.fs.remote[k].connect_retry() # yes, this works, .remote auto-extends
 				def pr(r):
 					r.trap(NoLink)
-					trace('error',"Node %s found, but no way to connect",k)
+					trace('error',"Node %s found, but not connected",k)
 				d.addErrback(pr)
 				def lerr(r):
 					log.err(r,"Problem adding node")

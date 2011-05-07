@@ -1,3 +1,9 @@
+python-sqlfuse (0.6.3-1) unstable; urgency=low
+
+  * Fix (re)connection issues
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sat, 07 May 2011 07:20:45 +0200
+
 python-sqlfuse (0.6.2-1) unstable; urgency=low
 
   * Limit the number of simultaneously open files to 500
