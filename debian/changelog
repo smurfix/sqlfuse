@@ -1,3 +1,9 @@
+python-sqlfuse (0.6.4-1) unstable; urgency=low
+
+  * Fix background jobs' immediate repetition.
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sat, 07 May 2011 08:32:00 +0200
+
 python-sqlfuse (0.6.3-1) unstable; urgency=low
 
   * Fix (re)connection issues

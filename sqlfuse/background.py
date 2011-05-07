@@ -132,20 +132,25 @@ class BackgroundJob(object,Service):
 			return
 			
 		if self.workerDefer is not None:
-			self.restart = True
+			if not self.restart:
+				self.restart = True
 		elif self.workerCall is None:
 			if during_work:
 				trace('background',"Start %s in %f sec (repeat)", self.__class__.__name__,self.interval)
 			else:
 				trace('background',"Start %s in %f sec", self.__class__.__name__,self.interval)
-			self.workerCall = reactor.callLater(self.interval,self.run)
+			if self.restart is True:
+				self.workerCall = reactor.callLater(self.interval,self.run)
+			else:
+				self.workerCall = reactor.callLater(0,self.run)
 
 	def run(self, dummy=None):
 		"""Background loop. Started via timer from trigger()."""
 
 		self.workerCall = None
 		if self.workerDefer:
-			self.restart = True
+			if not self.restart:
+				self.restart = True
 			return
 		self.restart = False
 		trace('background',"Starting %s", self.__class__.__name__)
@@ -529,7 +534,9 @@ class UpdateCollector(BackgroundJob):
 
 			it = yield db.DoSelect("select event.id,event.inode,event.node,event.typ,event.range from event join inode on inode.id=event.inode where inode.typ='f' and event.id>${min} and event.id<=${max} and event.node in (select id from node where root=${root}"+upd+") order by event.id limit 100", root=self.fs.root_id, node=self.fs.node_id, min=last,max=seq, _empty=True)
 			last = seq
+			n=0
 			for event,inum,node,typ,r in it:
+				n+=1
 				last = event
 				if r:
 					r = Range(r)
@@ -580,7 +587,8 @@ class UpdateCollector(BackgroundJob):
 				# yield inode.cache._close()
 
 			yield db.Do("update node set event=${event} where id=${node}", node=self.fs.node_id, event=last, _empty=True)
-			self.restart = 2
+			if n > 90:
+				self.restart = 2
 
 		yield self.fs.db(do_work, DB_RETRIES)
 #			if self.fs.node_id == 3:
