@@ -207,7 +207,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				self.echo_timer.cancel()
 				self.echo_timer = None
 			trace('remote',"Disconnected server to %d",self.node_id)
-			queue_retry()
+			self.queue_retry()
 
 	def client_connected(self, client):
 		trace('remote',"Connected client from %d",self.node_id)
