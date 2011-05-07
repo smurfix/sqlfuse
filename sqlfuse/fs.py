@@ -106,6 +106,7 @@ class Cache(object,pb.Referenceable):
 	file = None
 	write_event = None
 	in_use = 0
+	do_close = False
 
 	@property
 	def node(self):
@@ -153,11 +154,15 @@ class Cache(object,pb.Referenceable):
 
 	@inlineCallbacks
 	def _close(self):
+		if self.in_use > 0:
+			self.do_close = True
+			return
 		if self.file_closer:
 			self.file_closer.cancel()
 			self.file_closer = None
-		yield reactor.callInThread(self._fclose)
-		nFiles.release()
+		if self.file:
+			yield reactor.callInThread(self._fclose)
+			nFiles.release()
 
 	def _fclose(self):
 		with self.lock:
@@ -259,13 +264,18 @@ class Cache(object,pb.Referenceable):
 		self.in_use += 1
 		self._last_file = time()
 
+	@inlineCallbacks
 	def timeout_file(self):
 		assert self.in_use > 0
 		assert self.file is not None
 		assert self.file_closer is None
 		self.in_use -= 1
 		if not self.in_use:
-			self.file_closer = reactor.callLater(15,self._maybe_close)
+			if self.do_close:
+				self.do_close = False
+				self.file_closer = reactor.callLater(0,self._maybe_close)
+			else:
+				self.file_closer = reactor.callLater(15,self._maybe_close)
 
 	def _have_file(self, reason):
 		if not self.file:
@@ -301,24 +311,24 @@ class Cache(object,pb.Referenceable):
 		self.available &= r
 		self.fs.changer.note(self)
 		if do_file:
+			yield self.have_file("trim")
 			try:
-				yield self.have_file()
 				yield deferToThread(self._trim,0)
 			finally:
 				self.timeout_file()
 
 	@inlineCallbacks
 	def write(self,offset,data):
+		yield self.have_file("write")
 		try:
-			yield self.have_file("write")
 			yield deferToThread(self._write,offset,data)
 		finally:
 			self.timeout_file()
 
 	@inlineCallbacks
 	def read(self, offset,length):
+		yield self.have_file("read")
 		try:
-			yield self.have_file("read")
 			res = yield deferToThread(self._read,offset,length)
 		finally:
 			self.timeout_file()
