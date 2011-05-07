@@ -15,6 +15,7 @@ from sqlmix import Db,NoData
 #from sqlfuse import SqlFuse
 from sqlfuse.options import options
 from sqlfuse.range import Range
+from sqlfuse.fs import build_path
 from datetime import datetime,timedelta
 import sys
 from sqlfuse import DBVERSION
@@ -120,6 +121,7 @@ def inode_info(db,inum):
 		yield ("attr",k,repr(v))
 	for i,c,n in db.DoSelect("select cache.id,cache.cached,node.name from cache,node where node.id=cache.node and cache.inode=${inode}", inode=inum, _empty=1):
 		yield ("cache",n,str(Range(c)))
+	yield("store",build_path(".",inum))
 	
 	try:
 		def get_path(inum,prev=""):
