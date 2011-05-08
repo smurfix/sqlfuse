@@ -1,3 +1,9 @@
+python-sqlfuse (0.6.5-1) unstable; urgency=low
+
+  * Fix file copying. Again. *Sigh*.
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sun, 08 May 2011 17:52:05 +0200
+
 python-sqlfuse (0.6.4-1) unstable; urgency=low
 
   * Fix background jobs' immediate repetition.

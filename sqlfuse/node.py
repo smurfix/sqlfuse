@@ -20,6 +20,7 @@ Right now, only native interconnection is supported.
 __all__ = ('SqlNode','DataMissing','NoConnection')
 
 import os
+from traceback import print_exc
 
 from zope.interface import implements
 
@@ -41,6 +42,7 @@ ECHO_TIMER=1
 ECHO_TIMEOUT=10
 
 tracer_info['remote']="Interaction between nodes"
+tracer_info['readfile']="Remote file access"
 
 class NoConnection(RuntimeError):
 	"""\
@@ -258,17 +260,18 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 
 	@inlineCallbacks
 	def remote_readfile(self,caller,inum,reader,missing):
-		trace('remote',"readfile %s %s %s",caller,inum,reader)
+		trace('readfile',"%d: %s %s",inum,caller,reader)
 		inode = SqlInode(self.fs,inum)
 		yield self.fs.db(inode._load, DB_RETRIES)
 		if not inode.inum:
-			trace('remote',"Inode %d probably deleted",inum)
+			trace('readfile',"%d: Inode probably deleted",inum)
 			raise DataMissing(missing)
 
-		trace('remote',"avail %s & %s, known %s",inode.cache.available,missing,inode.cache.known)
+		trace('readfile',"%d: avail %s & %s, known %s",inum,inode.cache.available,missing,inode.cache.known)
 		avail = inode.cache.available & missing
 		if avail:
 			missing -= avail
+			trace('readfile',"%d: send %s",inum,avail)
 			h = yield inode.open(os.O_RDONLY)
 			def split(av):
 				for a,b,c in av:
@@ -281,13 +284,18 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				try:
 					data = yield h.read(a,b, atime=False)
 				except Exception as e:
+					print_exc()
 					break
 				try:
-					yield reader.callRemote("data",a,data)
+					d = reader.callRemote("data",a,data)
+					trace('readfile',"%d: remote_data: %s",inum,repr(d))
+					yield d
+					#yield reader.callRemote("data",a,data)
 				except Exception as e:
+					print_exc()
 					break
 			h.release()
-		trace('remote',"Missing: %s for %s / %s", missing,caller,reader)
+		trace('readfile',"%d: Missing %s for %s / %s", inum,missing,caller,reader)
 		returnValue( missing )
 		
 	

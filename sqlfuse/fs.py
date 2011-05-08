@@ -266,7 +266,6 @@ class Cache(object,pb.Referenceable):
 		self.in_use += 1
 		self._last_file = time()
 
-	@inlineCallbacks
 	def timeout_file(self):
 		assert self.in_use > 0
 		assert self.file is not None
@@ -299,15 +298,14 @@ class Cache(object,pb.Referenceable):
 		"""\
 			Data arrives.
 			"""
+		trace('cache',"%s: recv %d @ %d: known %s", self.inum,len(data),offset, self.known)
 		if not self.inum:
-			return
-		trace('cache',"%d: recv %d @ %d", self.inum,len(data),offset)
-		if self.fs.readonly:
 			return
 		if self.file_closer:
 			self.file_closer.reset(10)
 		yield self.write(offset,data)
 		yield self.has(offset,offset+len(data))
+		trace('cache',"%s: done; known %s",self.inum,self.known)
 
 	@inlineCallbacks
 	def trim(self,end, do_file=True):
@@ -323,15 +321,17 @@ class Cache(object,pb.Referenceable):
 			try:
 				yield deferToThread(self._trim,0)
 			finally:
-				yield self.timeout_file()
+				self.timeout_file()
 
 	@inlineCallbacks
 	def write(self,offset,data):
+		# This code is called bote locally and by remote_data(),
+		# so don't check fs.readonly here!
 		yield self.have_file("write")
 		try:
 			yield deferToThread(self._write,offset,data)
 		finally:
-			yield self.timeout_file()
+			self.timeout_file()
 
 	@inlineCallbacks
 	def read(self, offset,length):
@@ -347,7 +347,7 @@ class Cache(object,pb.Referenceable):
 				# Thus, replace with "unknown" instead. Unfortunately we don't have that. Yet.
 				self.fs.changer.note(self)
 		finally:
-			yield self.timeout_file()
+			self.timeout_file()
 		returnValue( res )
 
 	def has(self,offset,end):
