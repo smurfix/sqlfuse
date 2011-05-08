@@ -138,8 +138,12 @@ def inode_info(db,inum):
 			root,=db.DoFn("select name from root where inode=${root}",root=root_inum)
 			yield("path",root,repr(path.encode("utf-8")))
 	except NoData:
-		root,=db.DoFn("select name from root where inode=${root}",root=inum)
-		yield("path",root,"/")
+		try:
+			root,=db.DoFn("select name from root where inode=${root}",root=inum)
+		except NoData:
+			yield("deleted",)
+		else:
+			yield("path",root,"/")
 	for i,n in db.DoSelect("select inode,name from tree where parent=${inode}", inode=inum, _empty=1):
 		yield("entry",i,repr(n.encode("utf-8")))
 
