@@ -533,13 +533,11 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def open(self, flags, ctx=None):
 		"""Existing file."""
-		trace('fs',"%s: open file (%s)",self,self.fs.FileType)
 		yield self.fs.db(self._load, DB_RETRIES)
 		if stat.S_ISDIR(self.mode):
 			raise IOError(errno.EISDIR)
 		f = self.fs.FileType(self,flags)
 		yield f.open()
-		trace('fs',"%s: opened file: %s",self,f)
 		returnValue( f )
 
 	@inlineCallbacks
