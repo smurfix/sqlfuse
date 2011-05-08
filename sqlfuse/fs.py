@@ -62,7 +62,7 @@ tracers.add('conflict')
 
 # TODO: forcibly close an old file if we reach this limit
 # (This requires an ordered hash, i.e. either Py2.7 or reinventing the wheel)
-nFiles = DeferredSemaphore(500)
+nFiles = DeferredSemaphore(900)
 
 def build_path(store,inode, create=True):
 	fp = []
@@ -276,7 +276,7 @@ class Cache(object,pb.Referenceable):
 				self.do_close = False
 				self.file_closer = reactor.callLater(0,self._maybe_close)
 			else:
-				self.file_closer = reactor.callLater(15,self._maybe_close)
+				self.file_closer = reactor.callLater(10,self._maybe_close)
 
 	def _have_file(self, reason):
 		with self.lock:
@@ -302,7 +302,7 @@ class Cache(object,pb.Referenceable):
 		if not self.inum:
 			return
 		if self.file_closer:
-			self.file_closer.reset(10)
+			self.file_closer.reset(5)
 		yield self.write(offset,data)
 		yield self.has(offset,offset+len(data))
 		trace('cache',"%s: done; known %s",self.inum,self.known)
