@@ -251,7 +251,9 @@ class Cache(object,pb.Referenceable):
 			assert self.in_use == 0
 			try:
 				yield nFiles.acquire()
-				yield deferToThread(self._have_file,reason)
+				res = yield deferToThread(self._have_file,reason)
+				if not res:
+					nFiles.release() # some other thread was faster
 			except:
 				nFiles.release()
 				raise
@@ -278,7 +280,9 @@ class Cache(object,pb.Referenceable):
 				self.file_closer = reactor.callLater(15,self._maybe_close)
 
 	def _have_file(self, reason):
-		if not self.file:
+		with self.lock:
+			if self.file:
+				return False
 			ipath=self._file_path()
 			try:
 				self.file = open(ipath,"r+")
@@ -288,12 +292,16 @@ class Cache(object,pb.Referenceable):
 					raise
 				self.file = open(ipath,"w+")
 				trace('fs',"%d: open file %s for %s (new)", self.inum,ipath,reason)
+			return True
 
 	@inlineCallbacks
 	def remote_data(self, offset, data):
 		"""\
 			Data arrives.
 			"""
+		if not self.inum:
+			return
+		trace('cache',"%d: recv %d @ %d", self.inum,len(data),offset)
 		if self.fs.readonly:
 			return
 		if self.file_closer:
@@ -330,6 +338,14 @@ class Cache(object,pb.Referenceable):
 		yield self.have_file("read")
 		try:
 			res = yield deferToThread(self._read,offset,length)
+			lr = len(res)
+			if lr < length:
+				trace('fs',"%d: read %d @ %d: only got %d", self.inum, length,offset,lr)
+				self.available.delete(offset+lr,length-lr)
+				self.known.delete(offset+lr,length-lr)
+				# TODO: it's not necessarily gone, we just don't know where.
+				# Thus, replace with "unknown" instead. Unfortunately we don't have that. Yet.
+				self.fs.changer.note(self)
 		finally:
 			self.timeout_file()
 		returnValue( res )
@@ -377,8 +393,15 @@ class Cache(object,pb.Referenceable):
 				# another pass asking all of them for whatever is missing.
 				# However, it's much simpler (and causes less load overall)
 				# to just ask every node for everything, in order of proximity.
-				def chk(_=None):
+				notfound = [None]
+				def chk(res=None):
 					"""Test whether all data are here; if so, don't continue"""
+					trace('cache',"%s: Callback %s: check ! %s - %s",self.inum, res, todo,self.available)
+					if res is not None:
+						if notfound[0] is None:
+							notfound[0] = res
+						else:
+							notfound[0] &= res
 					return not (todo - self.available)
 				self.in_progress += todo
 				try:
@@ -387,9 +410,14 @@ class Cache(object,pb.Referenceable):
 					if repeat >= 20 and (r - self.available):
 						trace('cache',"%s: no link to %s", self.inum, str(e.node_id) if e.node_id else "?")
 						raise
+					trace('cache',"%s: No link: %s", self.inum, str(e.node_id) if e.node_id else "?")
 				except Exception as e:
 					trace('cache',"%s: error: %s", self.inum, e)
 					raise
+				else:
+					if notfound[0] and repeat > 20:
+						trace('cache',"%s: Data not found? %s", self.inum,notfound[0])
+						returnValue( False )
 				finally:
 					self.in_progress -= todo
 
@@ -1157,7 +1185,7 @@ class SqlFile(File):
 		returnValue( None )
 
 	@inlineCallbacks
-	def read(self, offset,length, ctx=None):
+	def read(self, offset,length, ctx=None, atime=True):
 		"""Read file, updating atime"""
 		trace('rw',"%d: read %d @ %d, len %d", self.node.inum,length,offset,self.node.size)
 		if offset >= self.node.size:
@@ -1167,7 +1195,8 @@ class SqlFile(File):
 			length = self.node.size-offset
 			trace('rw',"%d: return only %d", self.node.inum,length)
 
-		self.node.do_atime()
+		if atime:
+			self.node.do_atime()
 		cache = self.node.cache
 		if cache:
 			try:

@@ -627,7 +627,7 @@ class CopyWorker(BackgroundJob):
 					trace('copyrun',"%d: Start copying: %s",inode.inum,repr(inode.cache))
 					if inode.cache is not None:
 						res = yield inode.cache.get_data(0,inode.size)
-						if not res:
+						if self.running and not res:
 							trace('copyrun',"%d: Data unavailable", inode.inum)
 							yield db.Do("delete from todo where id=${id}", id=id, _empty=True)
 							continue

@@ -331,13 +331,16 @@ class SqlFuse(FileSystem):
 		#for dest in self.topology.keys():
 		for dest in self.neighbors:
 			try:
+				trace('remote',"%d: calling %s %s %s",dest,name,repr(a),repr(k))
 				res = yield self.call_node(dest,name,*a,**k)
-			except Exception:
+			except Exception as ee:
+				trace('remote',"%d: error %s",dest,ee)
 				# If any link is down, that's the error I return.
 				en = sys.exc_info()
 				if e is None or isinstance(en[1],NoLink):
 					e = en
 			else:
+				trace('remote',"%d: %s",dest,res)
 				if chk and chk(res):
 					returnValue( res )
 		if e is None:

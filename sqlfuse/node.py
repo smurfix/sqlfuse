@@ -26,7 +26,7 @@ from zope.interface import implements
 from twisted.python import log,failure
 from twisted.spread import pb
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks
+from twisted.internet.defer import inlineCallbacks,returnValue
 from twisted.internet import error as err
 
 from sqlfuse import trace,tracer_info, triggeredDefer, NoLink
@@ -258,12 +258,14 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 
 	@inlineCallbacks
 	def remote_readfile(self,caller,inum,reader,missing):
+		trace('remote',"readfile %s %s %s",caller,inum,reader)
 		inode = SqlInode(self.fs,inum)
 		yield self.fs.db(inode._load, DB_RETRIES)
 		if not inode.inum:
 			trace('remote',"Inode %d probably deleted",inum)
 			raise DataMissing(missing)
 
+		trace('remote',"avail %s & %s, known %s",inode.cache.available,missing,inode.cache.known)
 		avail = inode.cache.available & missing
 		if avail:
 			missing -= avail
@@ -277,7 +279,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 					yield a,b
 			for a,b in split(avail):
 				try:
-					data = yield h.read(a,b)
+					data = yield h.read(a,b, atime=False)
 				except Exception as e:
 					break
 				try:
@@ -285,9 +287,8 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				except Exception as e:
 					break
 			h.release()
-		if missing:
-			trace('remote',"Missing: %s for %s / %s", missing,caller,reader)
-			raise DataMissing(missing)
+		trace('remote',"Missing: %s for %s / %s", missing,caller,reader)
+		returnValue( missing )
 		
 	
 
