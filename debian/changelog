@@ -1,3 +1,9 @@
+python-sqlfuse (0.6.6-1) unstable; urgency=low
+
+  * Fix cache trim on short file
+
+ -- Matthias Urlichs <smurf@data.intern.smurf.noris.de>  Sun, 08 May 2011 22:19:52 +0200
+
 python-sqlfuse (0.6.5-1) unstable; urgency=low
 
   * Fix file copying. Again. *Sigh*.

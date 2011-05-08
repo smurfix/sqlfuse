@@ -606,8 +606,8 @@ class CopyWorker(BackgroundJob):
 		"""
 	interval = 0.5
 	def __init__(self,filesystem):
-		self.nfiles = 100
-		self.nworkers = 3
+		self.nfiles = 1000
+		self.nworkers = 10
 		self.last_entry = None
 		self.workers = set() # inode numbers
 		super(CopyWorker,self).__init__(filesystem)

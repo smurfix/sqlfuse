@@ -340,9 +340,9 @@ class Cache(object,pb.Referenceable):
 			res = yield deferToThread(self._read,offset,length)
 			lr = len(res)
 			if lr < length:
-				trace('fs',"%d: read %d @ %d: only got %d", self.inum, length,offset,lr)
-				self.available.delete(offset+lr,length-lr)
-				self.known.delete(offset+lr,length-lr)
+				trace('error',"%d: read %d @ %d: only got %d", self.inum, length,offset,lr)
+				self.available.delete(offset+lr,offset+length)
+				self.known.delete(offset+lr,offset+length)
 				# TODO: it's not necessarily gone, we just don't know where.
 				# Thus, replace with "unknown" instead. Unfortunately we don't have that. Yet.
 				self.fs.changer.note(self)
