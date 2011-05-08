@@ -323,7 +323,7 @@ class Cache(object,pb.Referenceable):
 			try:
 				yield deferToThread(self._trim,0)
 			finally:
-				self.timeout_file()
+				yield self.timeout_file()
 
 	@inlineCallbacks
 	def write(self,offset,data):
@@ -331,7 +331,7 @@ class Cache(object,pb.Referenceable):
 		try:
 			yield deferToThread(self._write,offset,data)
 		finally:
-			self.timeout_file()
+			yield self.timeout_file()
 
 	@inlineCallbacks
 	def read(self, offset,length):
@@ -347,7 +347,7 @@ class Cache(object,pb.Referenceable):
 				# Thus, replace with "unknown" instead. Unfortunately we don't have that. Yet.
 				self.fs.changer.note(self)
 		finally:
-			self.timeout_file()
+			yield self.timeout_file()
 		returnValue( res )
 
 	def has(self,offset,end):
