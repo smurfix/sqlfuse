@@ -88,7 +88,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		d = self.connect()
 		def grab_nolink(r):
 			r.trap(NoLink)
-			trace('remote',"connect to node %d failed: %s",self.node_id,r)
+			trace('remote',"connect to node %d failed: %s",self.node_id,r.getErrorMessage())
 			self.queue_retry()
 		d.addErrback(grab_nolink)
 		d.addErrback(lambda r: log.err(r,"Connection timer"))
@@ -124,6 +124,12 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		if self._connector: # in progress: wait for it
 			trace('remote',"Chain connect to node %d",self.node_id)
 			yield triggeredDefer(self._connector)
+			return
+		if self.node_id not in self.fs.topology:
+			trace('remote',"Not connecting to node %d: no topo",self.node_id)
+			return
+		if self.fs.topology[self.node_id] != self.node_id:
+			trace('remote',"Not connecting to node %d: via %s",self.node_id,self.fs.topology[self.node_id])
 			return
 		trace('remote',"Connecting to node %d",self.node_id)
 		try:
