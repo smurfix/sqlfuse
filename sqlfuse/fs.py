@@ -535,7 +535,7 @@ class SqlInode(Inode):
 		"""Existing file."""
 		yield self.fs.db(self._load, DB_RETRIES)
 		if stat.S_ISDIR(self.mode):
-			raise IOError(errno.EISDIR)
+			returnValue( IOError(errno.EISDIR) )
 		f = self.fs.FileType(self,flags)
 		yield f.open()
 		returnValue( f )
@@ -544,7 +544,7 @@ class SqlInode(Inode):
 	def opendir(self, ctx=None):
 		"""Existing file."""
 		if not stat.S_ISDIR(self.mode):
-			raise IOError(errno.ENOTDIR)
+			returnValue( IOError(errno.ENOTDIR) )
 		d = self.fs.DirType(self)
 		yield d.open()
 		returnValue( d )
@@ -584,7 +584,7 @@ class SqlInode(Inode):
 				inode = yield self._new_inode(db, name,mode|stat.S_IFREG,ctx)
 			else:
 				if flags & os.O_EXCL:
-					raise IOError(errno.EEXIST)
+					returnValue( IOError(errno.EEXIST) )
 				inode = SqlInode(self.fs,inum)
 				yield inode._load(db)
 	
@@ -642,7 +642,7 @@ class SqlInode(Inode):
 	def _unlink(self, name, ctx=None, db=None):
 		inode = yield self._lookup(name,db)
 		if stat.S_ISDIR(inode.mode):
-			raise IOError(errno.EISDIR)
+			returnValue( IOError(errno.EISDIR) )
 
 		yield db.Do("delete from tree where parent=${par} and name=${name}", par=self.inum,name=name)
 		cnt, = yield db.DoFn("select count(*) from tree where inode=${inode}", inode=inode.inum)
@@ -664,10 +664,10 @@ class SqlInode(Inode):
 		def do_rmdir(db):
 			inode = yield self._lookup(name,db)
 			if not stat.S_ISDIR(self.mode):
-				raise IOError(errno.ENOTDIR)
+				returnValue( IOError(errno.ENOTDIR) )
 			cnt, = yield db.DoFn("select count(*) from tree where parent=${inode}", inode=inode.inum)
 			if cnt:
-				raise IOError(errno.ENOTEMPTY)
+				returnValue( IOError(errno.ENOTEMPTY) )
 			db.call_committed(self.fs.rooter.d_dir,-1)
 			yield inode._remove(db)
 		return self.fs.db(do_rmdir, DB_RETRIES)
@@ -675,7 +675,7 @@ class SqlInode(Inode):
 	@inlineCallbacks
 	def symlink(self, name, target, ctx=None):
 		if len(target) > self.fs.info.targetlen:
-			raise IOError(errno.EDIR,"Cannot link a directory")
+			returnValue( IOError(errno.EDIR,"Cannot link a directory") )
 		inode = yield self.fs.db(lambda db: self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,target=target), DB_RETRIES)
 		returnValue( inode )
 
@@ -683,7 +683,7 @@ class SqlInode(Inode):
 		@inlineCallbacks
 		def do_link(db):
 			if stat.S_ISDIR(oldnode.mode):
-				raise IOError(errno.ENAMETOOLONG,"target entry too long")
+				returnValue( IOError(errno.ENAMETOOLONG,"target entry too long") )
 			res = yield self._link(oldnode,target, ctx=ctx,db=db)
 			returnValue( res )
 		return self.fs.db(do_link, DB_RETRIES)
@@ -693,7 +693,7 @@ class SqlInode(Inode):
 		try:
 			yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=oldnode.inum,par=self.inum,name=target)
 		except Exception:
-			raise IOError(errno.EEXIST, "%d:%s" % (self.inum,target))
+			returnValue( IOError(errno.EEXIST, "%d:%s" % (self.inum,target)) )
 		self.mtime = nowtuple()
 		self.size += len(target)+1
 		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
@@ -767,17 +767,31 @@ class SqlInode(Inode):
 		def do_getxattr(db):
 			nid = yield self.fs.xattr_id(name,db,False)
 			if nid is None:
-				raise IOError(errno.ENOATTR)
+				returnValue( IOError(errno.ENOATTR) )
 			try:
 				val, = yield db.DoFn("select value from xattr where inode=${inode} and name=${name}", inode=self.inum,name=nid)
 			except NoData:
-				raise IOError(errno.ENOATTR)
+				returnValue( IOError(errno.ENOATTR) )
 			returnValue( val )
-		return self.fs.db(do_getxattr, DB_RETRIES)
+
+		if name in self.no_attrs:
+			return IOError(errno.ENOATTR)
+		res = self.fs.db(do_getxattr, DB_RETRIES)
+		def noa(r):
+			r.trap(IOError)
+			if r.value.value != errno.ENOATTR:
+				return r
+			self.no_attrs.add(name)
+			return -errno.ENOATTR
+		res.addCallback(noa)
+		return res
+
 
 	def setxattr(self, name, value, flags, ctx=None):
+		if name in self.no_attrs:
+			self.no_attrs.remove(name)
 		if len(value) > self.fs.info.attrlen:
-			raise IOError(errno.E2BIG)
+			return IOError(errno.E2BIG)
 
 		@inlineCallbacks
 		def do_setxattr(db):
@@ -786,11 +800,11 @@ class SqlInode(Inode):
 				yield db.Do("update xattr set value=${value},seq=seq+1 where inode=${inode} and name=${name}", inode=self.inum,name=nid,value=value)
 			except NoData:
 				if flags & XATTR_REPLACE:
-					raise IOError(errno.ENOATTR)
+					returnValue( IOError(errno.ENOATTR) )
 				yield db.Do("insert into xattr (inode,name,value,seq) values(${inode},${name},${value},1)", inode=self.inum,name=nid,value=value)
 			else: 
 				if flags & XATTR_CREATE:
-					raise IOError(errno.EEXIST)
+					returnValue( IOError(errno.EEXIST) )
 			returnValue( None )
 		return self.fs.db(do_setxattr, DB_RETRIES)
 
@@ -810,12 +824,15 @@ class SqlInode(Inode):
 		def do_removexattr(db):
 			nid = self.fs.xattr_id(name, db,False)
 			if nid is None:
-				raise IOError(errno.ENOATTR)
+				returnValue( IOError(errno.ENOATTR) )
 			try:
 				yield db.Do("delete from xattr where inode=${inode} and name=${name}", inode=self.inum,name=nid)
 			except NoData:
-				raise IOError(errno.ENOATTR)
+				returnValue( IOError(errno.ENOATTR) )
 			returnValue( None )
+		if name in self.no_attrs:
+			return IOError(errno.ENOATTR)
+		self.no_attrs.add(name)
 		return self.fs.db(do_removexattr, DB_RETRIES)
 
 	def readlink(self, ctx=None):

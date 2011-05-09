@@ -1,3 +1,10 @@
+python-sqlfuse (0.6.7-1) unstable; urgency=low
+
+  * return some file system errors in-line (speedup)
+  * remember missing xattrs
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Mon, 09 May 2011 11:21:08 +0200
+
 python-sqlfuse (0.6.6-1) unstable; urgency=low
 
   * Fix cache trim on short file
