@@ -460,6 +460,7 @@ class SqlInode(Inode):
 #		'cache',         # Range of bytes read from remote nodes
 #		'inuse',         # open files on this inode? <0:delete after close
 #		'write_timer',   # attribute write timer
+#		'no_attrs',      # set of attributes which don't exist
 #		]
 
 	@inlineCallbacks
@@ -914,6 +915,7 @@ class SqlInode(Inode):
 		self.load_lock = DeferredLock()
 		self._saving = None
 		self._saveq = []
+		self.no_attrs = set()
 		_InodeList.append(self)
 		# defer anything we only need when loaded to after _load is called
 
