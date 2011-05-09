@@ -161,7 +161,7 @@ CREATE TABLE `cache` (
   `inode` bigint(20) unsigned NOT NULL,
   `node` int(10) unsigned NOT NULL,
   `event` bigint(20) unsigned NULL,
-  `cached` varchar(1023) null, -- known-data range: NULL=whole file
+  `cached` varchar(1023) not null, -- known-data range
   PRIMARY KEY (`id`),
   unique key `inodeloc` (node,inode),
   key `fk_cache_inode` (inode),
