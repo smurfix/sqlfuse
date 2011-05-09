@@ -779,11 +779,12 @@ class SqlInode(Inode):
 			return IOError(errno.ENOATTR)
 		res = self.fs.db(do_getxattr, DB_RETRIES)
 		def noa(r):
-			r.trap(IOError)
-			if r.value.value != errno.ENOATTR:
+			if not isinstance(r,IOError):
+				return r
+			if r.value != errno.ENOATTR:
 				return r
 			self.no_attrs.add(name)
-			return -errno.ENOATTR
+			return r
 		res.addCallback(noa)
 		return res
 
