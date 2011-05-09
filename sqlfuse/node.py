@@ -30,7 +30,7 @@ from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks,returnValue
 from twisted.internet import error as err
 
-from sqlfuse import trace,tracer_info, triggeredDefer, NoLink
+from sqlfuse import trace,tracers,tracer_info, triggeredDefer, NoLink
 from sqlfuse.connect import INode
 from sqlfuse.fs import SqlInode,DB_RETRIES
 from sqlmix import NoData
@@ -43,6 +43,7 @@ ECHO_TIMEOUT=10
 
 tracer_info['remote']="Interaction between nodes"
 tracer_info['readfile']="Remote file access"
+tracer_info['ping']="Report ping; inhibit ping timeouts"
 
 class NoConnection(RuntimeError):
 	"""\
@@ -168,8 +169,11 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 
 	def server_no_echo(self):
 		self.echo_timer = None
-		self.disconnect_retry()
-		trace('remote',"Echo timeout")
+		if 'ping' in tracers:
+			trace('ping',"%s: Echo timeout", str(self.node_id) if self.node_id else '?')
+		else:
+			self.disconnect_retry()
+			trace('remote',"%s: Echo timeout", str(self.node_id) if self.node_id else '?')
 
 	def server_echo(self):
 		self.echo_timer = reactor.callLater(ECHO_TIMEOUT,self.server_no_echo)
@@ -177,15 +181,19 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		def get_echo(r):
 			if self.echo_timer:
 				self.echo_timer.cancel()
+			if 'ping' in tracers:
+				trace('ping',"%s: got echo", str(self.node_id) if self.node_id else '?')
 			self.echo_timer = reactor.callLater(ECHO_TIMER,self.server_echo)
 
 		def get_echo_error(r):
 			if self.echo_timer:
 				self.echo_timer.cancel()
 				self.echo_timer = None
-			log.err(r,"Echo")
+			log.err(r,"Echo "+(str(self.node_id) if self.node_id else '?'))
 			self.disconnect_retry()
 
+		if 'ping' in tracers:
+			trace('ping',"%s: send echo", str(self.node_id) if self.node_id else '?')
 		d = self.do_echo("ping")
 		d.addCallbacks(get_echo,get_echo_error)
 			
