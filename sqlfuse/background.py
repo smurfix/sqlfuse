@@ -12,7 +12,7 @@ from __future__ import division, print_function, absolute_import
 __all__ = ("RootUpdater","Recorder","NodeCollector","CacheRecorder","UpdateCollector","CopyWorker","InodeCleaner","InodeWriter")
 
 from collections import defaultdict
-import os,sys
+import errno,os,sys
 
 from zope.interface import implements
 
