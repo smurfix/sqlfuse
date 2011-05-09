@@ -308,7 +308,7 @@ class SqlFuse(FileSystem):
 
 	def call_node(self,dest,name,*a,**k):
 		if dest in self.missing_neighbors:
-			raise NoLink(dest)
+			raise NoLink(dest,"missing")
 
 		try:
 			node = self.topology[dest]
@@ -316,7 +316,7 @@ class SqlFuse(FileSystem):
 		except KeyError:
 			trace('error',"NoLink! %s %s %s %s",dest,name,repr(a),repr(k))
 			self.missing_neighbors.add(dest)
-			raise NoLink(dest)
+			raise NoLink(dest,"missing 2")
 
 		if dest == node:
 			return getattr(rem,"do_"+name)(*a,**k)

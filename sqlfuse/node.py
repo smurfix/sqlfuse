@@ -88,7 +88,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 		d = self.connect()
 		def grab_nolink(r):
 			r.trap(NoLink)
-			trace('remote',"connect to node %d failed",self.node_id)
+			trace('remote',"connect to node %d failed: %s",self.node_id,r)
 			self.queue_retry()
 		d.addErrback(grab_nolink)
 		d.addErrback(lambda r: log.err(r,"Connection timer"))
@@ -131,7 +131,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				try:
 					m, = yield db.DoFn("select method from updater where src=${src} and dest=${dest}",src=self.fs.node_id,dest=self.node_id)
 				except NoData:
-					raise NoLink(self.node_id)
+					raise NoLink(self.node_id,"No Data")
 				m = __import__("sqlfuse.connect."+m, fromlist=('NodeClient',))
 			m = m.NodeClient(self)
 			self._connector = m.connect()
@@ -139,7 +139,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 			# callback chain and as a possible cancellation point
 			yield triggeredDefer(self._connector)
 			if self._server is None:
-				raise NoLink(self.node_id)
+				raise NoLink(self.node_id, "No _server")
 		except NoLink:
 			raise
 		except Exception as e: # no connection
@@ -260,7 +260,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 	def remote_exec(self,node,name,*a,**k):
 		if node not in self.fs.topology:
 			trace('remote',"NoLink remote %s %s %s %s %s",caller,node,name,repr(a),repr(k))
-			raise NoLink(node)
+			raise NoLink(node,"remote exec")
 
 		# TODO: cache calls to stuff like reading from a file
 		# TODO: prevent cycles
@@ -322,7 +322,7 @@ class SqlNode(pb.Avatar,pb.Referenceable):
 				def check_link(r):
 					if self._server is None:
 						# TODO: this really should not happen
-						raise NoLink(self.node_id)
+						raise NoLink(self.node_id,"_server 2")
 				d.addCallback(check_link)
 				d.addCallback(lambda r: getattr(self._server,"do_"+name)(self,*a,**k))
 				return d
