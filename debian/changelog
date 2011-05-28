@@ -1,3 +1,9 @@
+python-sqlfuse (0.6.8-1) unstable; urgency=low
+
+  * Add code to create TODO records retroactively (for delayed file copying).
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Sat, 28 May 2011 15:02:14 +0200
+
 python-sqlfuse (0.6.7-1) unstable; urgency=low
 
   * return some file system errors in-line (speedup)

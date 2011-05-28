@@ -146,6 +146,8 @@ def options(mode=None,args=None):
 		Aupdate = A.add_parser("update",help="update some metadata")
 		Aupdate.set_defaults(mode="update")
 
+		Async = A.add_parser("sync",help="sync some metadata to the FS")
+		Async.set_defaults(mode="sync")
 
 		Badd = Aadd.add_subparsers(title='types', help='data type')
 
@@ -190,7 +192,6 @@ def options(mode=None,args=None):
 		Bdelupdater.set_defaults(mode2="updater")
 		Bdelupdater.add_argument("id", type=int, help="updater ID")
 
-
 		Bupdate = Aupdate.add_subparsers(title='types', help='data type')
 
 		Bupdatenode = Bupdate.add_parser("node",help="directory access point")
@@ -220,6 +221,10 @@ def options(mode=None,args=None):
 		Bupdateroot.add_argument("name", help="Root name")
 		Bupdateroot.add_argument("--name", dest="newname", help="New name")
 
+		Bsync = Async.add_subparsers(title='types', help='data type')
+		Bsynccache = Bupdate.add_parser("cache",help="Find missing cache entries")
+		Bsynccache.set_defaults(mode2="cache")
+		Bsynccache.add_argument("name", help="Node name")
 
 		Blist = Alist.add_subparsers(title='types', help='data type')
 

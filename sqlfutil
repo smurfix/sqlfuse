@@ -211,6 +211,22 @@ def progress_info(db,pnr):
 		yield("range",str(r))
 
 
+def sync_cache(node):
+	"""\
+		For all files where the current node doesn't have a cache entry and some other node only has an
+		empty cache record, add the full file locally, plus a TODO record for the other nodes.
+		"""
+	nodes = []
+	root, = db.DoFn("select root from node where id=${node}", node=node)
+	try:
+		for n, in db.DoSelect("select id from node where root=${root} and id != ${node}", root=root,node=node):
+	except NoData:
+		print "Single node"
+		tr = db.DoSelect("select inode from cache,inode ")
+		return
+	for inode, in db.DoSelect("select cache.inode from cache"):
+		print inode
+
 def main():
 	"""Main program."""
 	
@@ -474,6 +490,16 @@ def _main(opt):
 			if opt.distance:
 				db.Do("update updater set distance=${distance} where id=${id}", id=opt.id, distance=opt.distance, _empty=True)
 				done += 1
+		else:
+			raise NotImplementedError("I don't know how to do that.")
+		if not done:
+			print("Nothing to do.")
+	elif opt.mode == "sync":
+		done = 0
+		if opt.mode2 == "cache":
+			node, = db.DoFn("select id from node where name=${node}", node=opt.name)
+			sync_cache(node)
+			done += 1
 		else:
 			raise NotImplementedError("I don't know how to do that.")
 		if not done:

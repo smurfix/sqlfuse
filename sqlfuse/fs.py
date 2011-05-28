@@ -781,7 +781,7 @@ class SqlInode(Inode):
 		def noa(r):
 			if not isinstance(r,IOError):
 				return r
-			if r.value != errno.ENOATTR:
+			if r.errno != errno.ENOATTR:
 				return r
 			self.no_attrs.add(name)
 			return r
