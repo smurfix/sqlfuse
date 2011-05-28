@@ -52,11 +52,6 @@ class Info(object):
 		return db.DoSelect("select name,value from `info`", _callback=cb)
 
 
-try:
-	errno.ENOATTR
-except AttributeError:
-	errno.ENOATTR=61 # TODO: this is Linux i386
-
 class NoLink(RuntimeError):
 	"""\
 		There's no record for connecting to a remote node.

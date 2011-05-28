@@ -768,20 +768,20 @@ class SqlInode(Inode):
 		def do_getxattr(db):
 			nid = yield self.fs.xattr_id(name,db,False)
 			if nid is None:
-				returnValue( IOError(errno.ENOATTR) )
+				returnValue( IOError(errno.ENODATA) )
 			try:
 				val, = yield db.DoFn("select value from xattr where inode=${inode} and name=${name}", inode=self.inum,name=nid)
 			except NoData:
-				returnValue( IOError(errno.ENOATTR) )
+				returnValue( IOError(errno.ENODATA) )
 			returnValue( val )
 
 		if name in self.no_attrs:
-			return IOError(errno.ENOATTR)
+			return IOError(errno.ENODATA)
 		res = self.fs.db(do_getxattr, DB_RETRIES)
 		def noa(r):
 			if not isinstance(r,IOError):
 				return r
-			if r.errno != errno.ENOATTR:
+			if r.errno != errno.ENODATA:
 				return r
 			self.no_attrs.add(name)
 			return r
@@ -802,7 +802,7 @@ class SqlInode(Inode):
 				yield db.Do("update xattr set value=${value},seq=seq+1 where inode=${inode} and name=${name}", inode=self.inum,name=nid,value=value)
 			except NoData:
 				if flags & XATTR_REPLACE:
-					returnValue( IOError(errno.ENOATTR) )
+					returnValue( IOError(errno.ENODATA) )
 				yield db.Do("insert into xattr (inode,name,value,seq) values(${inode},${name},${value},1)", inode=self.inum,name=nid,value=value)
 			else: 
 				if flags & XATTR_CREATE:
@@ -826,14 +826,14 @@ class SqlInode(Inode):
 		def do_removexattr(db):
 			nid = self.fs.xattr_id(name, db,False)
 			if nid is None:
-				returnValue( IOError(errno.ENOATTR) )
+				returnValue( IOError(errno.ENODATA) )
 			try:
 				yield db.Do("delete from xattr where inode=${inode} and name=${name}", inode=self.inum,name=nid)
 			except NoData:
-				returnValue( IOError(errno.ENOATTR) )
+				returnValue( IOError(errno.ENODATA) )
 			returnValue( None )
 		if name in self.no_attrs:
-			return IOError(errno.ENOATTR)
+			return IOError(errno.ENODATA)
 		self.no_attrs.add(name)
 		return self.fs.db(do_removexattr, DB_RETRIES)
 
