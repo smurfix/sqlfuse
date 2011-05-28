@@ -505,7 +505,7 @@ class SqlInode(Inode):
 	def setattr(self, **attrs):
 		size = attrs.get('size',None)
 		if size is not None:
-			self.fs.record.trim(self.node)
+			self.fs.record.trim(self,size)
 		if size is not None and self.cache and self.size > size:
 			dtrim = self.cache.trim(size)
 		else:
