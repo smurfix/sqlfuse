@@ -25,7 +25,7 @@ from twistfuse.kernel import XATTR_CREATE,XATTR_REPLACE
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue, DeferredLock, Deferred, succeed, DeferredSemaphore
 from twisted.internet.threads import deferToThread, blockingCallFromThread
-from twisted.python import log
+from twisted.python import log,failure
 from twisted.spread import pb
 
 from sqlfuse import nowtuple,log_call,flag2mode, trace,tracer_info,tracers, NoLink
@@ -138,10 +138,13 @@ class Cache(object,pb.Referenceable):
 		self.lock = Lock() # protect file read/write
 
 	def __del__(self):
-		if self.file_closer:
-			self.file_closer.cancel()
-			self.file_closer = None
-		self._fclose()
+		try:
+			if self.file_closer:
+				self.file_closer.cancel()
+				self.file_closer = None
+			self._fclose()
+		except Exception:
+			log.err("Freeing cache")
 
 	@inlineCallbacks
 	def _maybe_close(self):
@@ -245,26 +248,29 @@ class Cache(object,pb.Referenceable):
 				else:
 					os.fsync(self.file.fileno())
 
-	@inlineCallbacks
 	def have_file(self, reason):
 		if not self.file:
 			assert self.in_use == 0
-			try:
-				yield nFiles.acquire()
-				res = yield deferToThread(self._have_file,reason)
-				if not res:
-					nFiles.release() # some other thread was faster
-			except:
-				nFiles.release()
-				raise
+			d = nFiles.acquire()
+			d.addCallback(lambda _: deferToThread(self._have_file,reason))
+			def rb(res):
+				if not res or isinstance(res,failure.Failure):
+					nFiles.release()
+				return res
+			d.addBoth(rb)
 		elif self.file_closer:
 			assert self.in_use == 0
 			self.file_closer.cancel()
 			self.file_closer = None
+			d = succeed(None)
 		else:
 			assert self.in_use > 0
-		self.in_use += 1
-		self._last_file = time()
+			d = succeed(None)
+		def rb2(_):
+			self.in_use += 1
+			self._last_file = time()
+		d.addCallback(rb2)
+		return d
 
 	def timeout_file(self):
 		assert self.in_use > 0
@@ -323,21 +329,21 @@ class Cache(object,pb.Referenceable):
 			finally:
 				self.timeout_file()
 
-	@inlineCallbacks
 	def write(self,offset,data):
-		# This code is called bote locally and by remote_data(),
+		# This code is called both locally and by remote_data(),
 		# so don't check fs.readonly here!
-		yield self.have_file("write")
-		try:
-			yield deferToThread(self._write,offset,data)
-		finally:
+		d = self.have_file("write")
+		d.addCallback(lambda _: deferToThread(self._write,offset,data))
+		def cb(r):
 			self.timeout_file()
+			return r
+		d.addBoth(cb)
+		return d
 
-	@inlineCallbacks
 	def read(self, offset,length):
-		yield self.have_file("read")
-		try:
-			res = yield deferToThread(self._read,offset,length)
+		d = self.have_file("read")
+		d.addCallback(lambda _: deferToThread(self._read,offset,length))
+		def chk(res):
 			lr = len(res)
 			if lr < length:
 				trace('error',"%d: read %d @ %d: only got %d", self.inum, length,offset,lr)
@@ -346,9 +352,13 @@ class Cache(object,pb.Referenceable):
 				# TODO: it's not necessarily gone, we just don't know where.
 				# Thus, replace with "unknown" instead. Unfortunately we don't have that. Yet.
 				self.fs.changer.note(self)
-		finally:
+			return res
+		d.addCallback(chk)
+		def cb(r):
 			self.timeout_file()
-		returnValue( res )
+			return r
+		d.addBoth(cb)
+		return d
 
 	def has(self,offset,end):
 		"""\
@@ -1023,6 +1033,11 @@ class SqlInode(Inode):
 			elif k not in updated: # updated and unchanged value
 				self.attrs[k] = v
 
+	def delayed_save(self):
+		self._save_timer = None
+		d = self.fs.db(self._save, DB_RETRIES)
+		d.addErrback(lambda r: log.err(r,"delayed save"))
+
 	@inlineCallbacks
 	def _save(self, db, new_seq=None):
 		"""Save this inode's attributes"""
@@ -1163,7 +1178,7 @@ class SqlInode(Inode):
 			self.inuse -= 1
 		else:
 			raise RuntimeError("SqlInode %r counter mismatch" % (self,))
-		return succeed(False)
+		return succeed(None)
 
 	def defer_delete(self):
 		"""Mark for deletion if in use."""
@@ -1213,7 +1228,6 @@ class SqlFile(File):
 			yield self.node.cache.trim(0)
 		returnValue( None )
 
-	@inlineCallbacks
 	def read(self, offset,length, ctx=None, atime=True):
 		"""Read file, updating atime"""
 		trace('rw',"%d: read %d @ %d, len %d", self.node.inum,length,offset,self.node.size)
@@ -1228,22 +1242,30 @@ class SqlFile(File):
 			self.node.do_atime()
 		cache = self.node.cache
 		if cache:
-			try:
-				res = yield cache.get_data(offset,length)
-			except NoLink:
-				res = None
-			if not res:
-				trace('rw',"%d: error (no cached data)", self.node.inum)
-				raise NoCachedData(self.node.inum)
-			data = yield cache.read(offset,length)
-			trace('rw',"%d: return %d (cached)", self.node.inum,len(data))
+			d = cache.get_data(offset,length)
+			def nlt(err):
+				err.trap(NoLink)
+				return None
+			d.addErrback(nlt)
+			def nlt2(res):
+				if not res:
+					trace('rw',"%d: error (no cached data)", self.node.inum)
+					raise NoCachedData(self.node.inum)
+			d.addCallback(nlt2)
+			d.addCallback(lambda _: cache.read(offset,length))
+			def rep1(data):
+				trace('rw',"%d: return %d (cached)", self.node.inum,len(data))
+				return data
+			d.addCallback(rep1)
 		else:
-			data = yield deferToThread(_read,offset,length)
-			trace('rw',"%d: return %d", self.node.inum,len(data))
+			d = deferToThread(_read,offset,length)
+			def rep2(data):
+				trace('rw',"%d: return %d", self.node.inum,len(data))
+				return data
+			d.addCallback(rep2)
 
-		returnValue( data )
+		return d
 
-	@inlineCallbacks
 	def write(self, offset,buf, ctx=None):
 		"""Write file, updating mtime, possibly updating size"""
 		# TODO: use fstat() for size info, access may be concurrent
@@ -1252,29 +1274,29 @@ class SqlFile(File):
 			raise OSError(errno.EROFS)
 		trace('rw',"%d: write %d @ %d", self.node.inum,len(buf), offset)
 
-		yield self.node.cache.write(offset,buf)
 		end = offset+len(buf)
-		if self.node.cache:
-			yield self.node.cache.has(offset,end)
-
-		self.node.mtime = nowtuple()
-		if self.node.size < end:
-			trace('rw',"%d: end now %d", self.node.inum, end)
-			self.node.size = end
-		self.node.changes.add(offset,end)
-		self.writes += 1
-		returnValue( len(buf) )
-
-	def delayed_save(self):
-		self._save_timer = None
-		d = self.node.fs.db(self.node._save, DB_RETRIES)
-		d.addErrback(lambda r: log.err(r,"delayed save"))
+		d = self.node.cache.write(offset,buf)
+		def cb1(_):
+			if self.node.cache:
+				return self.node.cache.has(offset,end)
+		def cb2(_):
+			self.node.mtime = nowtuple()
+			if self.node.size < end:
+				trace('rw',"%d: end now %d", self.node.inum, end)
+				self.node.size = end
+			self.node.changes.add(offset,end)
+			self.writes += 1
+			return len(buf)
+		d.addCallback(cb1)
+		d.addCallback(cb2)
+		return d
 
 	def release(self, ctx=None):
 		"""The last process closes the file."""
 		d = self.node.clr_inuse()
-		if not self._save_timer:
-			self._save_timer = reactor.callLater(1, self.delayed_save)
+		if not self.node._save_timer:
+			self.node._save_timer = reactor.callLater(1, self.node.delayed_save)
+		d.addCallback(lambda _: None)
 		return d
 
 	def flush(self,flags, ctx=None):
@@ -1368,7 +1390,9 @@ class SqlDir(Dir):
 		returnValue( None )
 
 	def release(self, ctx=None):
-		return self.node.clr_inuse()
+		d = self.node.clr_inuse()
+		d.addCallback(lambda _: None)
+		return d
 
 	def sync(self, ctx=None):
 		log_call()
