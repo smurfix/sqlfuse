@@ -476,6 +476,8 @@ class SqlInode(Inode):
 #		'_saveq',        # delayed save
 #		'no_attrs',      # cache for empty extended attributes
 #		'load_lock',     # deferred queue for loading from database
+#		'_nlink',        # deferred which holds the current nlink count
+#		'_nlink_drop',   # timer which frees that when it times out
 #		]
 
 	@inlineCallbacks
@@ -491,16 +493,30 @@ class SqlInode(Inode):
 
 	# ___ FUSE methods ___
 
+	def _no_nlink(self):
+		self._nlink_drop = None
+		self._nlink.addErrback(log.err,"no_nlink_end")
+		self._nlink = None
+
 	def getattr(self):
 		"""Read inode attributes from the database."""
-		@inlineCallbacks
-		def do_getattr(db):
-			res = {'ino':self.inum if self.inum != self.fs.root_inum else 1}
+		def do_nlink(db):
 			if stat.S_ISDIR(self.mode): 
-				res['nlink'], = yield db.DoFn("select count(*) from tree,inode where tree.parent=${inode} and tree.inode=inode.id and inode.typ='d'",inode=self.inum)
-				res['nlink'] += 2 ## . and ..
+				d = db.DoFn("select count(*) from tree,inode where tree.parent=${inode} and tree.inode=inode.id and inode.typ='d'",inode=self.inum)
 			else:
-				res['nlink'], = yield db.DoFn("select count(*) from tree where inode=${inode}",inode=self.inum)
+				d = db.DoFn("select count(*) from tree where inode=${inode}",inode=self.inum)
+			def nlc(r):
+				r = r[0]
+				if stat.S_ISDIR(self.mode): 
+					r += 2 ## . and ..
+				self._nlink_drop = reactor.callLater(self.fs.ATTR_VALID[0], self._no_nlink)
+				return r
+			d.addCallback(nlc)
+			d.addErrback(lambda r: log.err(r,"get nlink"))
+			return d
+			
+		def do_getattr(nlink):
+			res = {'ino':self.inum if self.inum != self.fs.root_inum else 1, 'nlink':nlink}
 			for k in inode_attrs:
 				res[k] = self[k]
 # TODO count subdirectories
@@ -514,8 +530,20 @@ class SqlInode(Inode):
 			res['generation'] = 1 ## TODO: inodes might be recycled (depends on the database)
 			res['attr_valid'] = self.fs.ATTR_VALID
 			res['entry_valid'] = self.fs.ENTRY_VALID
-			returnValue( res )
-		return self.fs.db(do_getattr, DB_RETRIES)
+			return res
+
+		# if _nlink is set, it's a Deferred which has the current nlink
+		# count as its value. If not, we get the value from the database.
+		if self._nlink is None:
+			self._nlink = self.fs.db(do_nlink, DB_RETRIES)
+
+		d = Deferred()
+		def cpy(r):
+			d.callback(r)
+			return r
+		self._nlink.addCallback(cpy)
+		d.addCallback(do_getattr)
+		return d
 
 	def setattr(self, **attrs):
 		size = attrs.get('size',None)
@@ -631,6 +659,8 @@ class SqlInode(Inode):
 		def adj_size():
 			self.mtime = nowtuple()
 			self.size += len(name)+1
+			if self._nlink is not None and stat.S_IFMT(mode) == stat.S_IFDIR:
+				self._nlink.addCallback(lambda n: n+1)
 		db.call_committed(adj_size)
 
 		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size,typ) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size},${typ})", root=self.fs.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size,typ=mode_char[stat.S_IFMT(mode)])
@@ -684,6 +714,11 @@ class SqlInode(Inode):
 			cnt, = yield db.DoFn("select count(*) from tree where parent=${inode}", inode=inode.inum)
 			if cnt:
 				returnValue( IOError(errno.ENOTEMPTY) )
+
+			def adj_nlink():
+				if self._nlink is not None:
+					self._nlink.addCallback(lambda n: n-1)
+			db.call_committed(adj_nlink)
 			db.call_committed(self.fs.rooter.d_dir,-1)
 			yield inode._remove(db)
 		return self.fs.db(do_rmdir, DB_RETRIES)
@@ -935,6 +970,7 @@ class SqlInode(Inode):
 		self._saveq = []
 		self.no_attrs = set()
 		self._save_timer = None
+		self._nlink = None
 		_InodeList.append(self)
 		# defer anything we only need when loaded to after _load is called
 
