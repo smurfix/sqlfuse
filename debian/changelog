@@ -1,7 +1,9 @@
 python-sqlfuse (0.6.9-1) unstable; urgency=low
 
-  * Don't save inode data immediately after closing.
-    (NFS opens/closes around every file access!)
+  * NFS opens/closes around every file access!
+    * Don't save inode data immediately after closing.
+    * Take @inlineDeferred out of the media and open/close path
+    * Remember link count instead of hitting the database each getattr() time
   * Immediately change link count and directory size
     instead of waiting until after the commit.
 
