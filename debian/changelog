@@ -2,6 +2,8 @@ python-sqlfuse (0.6.9-1) unstable; urgency=low
 
   * Don't save inode data immediately after closing.
     (NFS opens/closes around every file access!)
+  * Immediately change link count and directory size
+    instead of waiting until after the commit.
 
  -- Matthias Urlichs <smurf@smurf.noris.de>  Tue, 31 May 2011 11:38:34 +0200
 

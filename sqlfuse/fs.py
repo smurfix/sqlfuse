@@ -497,6 +497,11 @@ class SqlInode(Inode):
 		self._nlink_drop = None
 		self._nlink.addErrback(log.err,"no_nlink_end")
 		self._nlink = None
+		print >>sys.stderr,"_NLINK"
+
+	def _adj_nlink(self,x):
+		if self._nlink is not None:
+			self._nlink.addCallback(lambda n: n+x)
 
 	def getattr(self):
 		"""Read inode attributes from the database."""
@@ -539,6 +544,7 @@ class SqlInode(Inode):
 
 		d = Deferred()
 		def cpy(r):
+			print >>sys.stderr,"NLINK",r
 			d.callback(r)
 			return r
 		self._nlink.addCallback(cpy)
@@ -656,12 +662,17 @@ class SqlInode(Inode):
 		if rdev is None: rdev=0 # not NULL
 		if target: size=len(target)
 		else: size=0
+
+		self.mtime = nowtuple()
+		self.size += len(name)+1
+		if stat.S_IFMT(mode) == stat.S_IFDIR:
+			self._adj_nlink(1)
 		def adj_size():
-			self.mtime = nowtuple()
-			self.size += len(name)+1
-			if self._nlink is not None and stat.S_IFMT(mode) == stat.S_IFDIR:
-				self._nlink.addCallback(lambda n: n+1)
-		db.call_committed(adj_size)
+			self.size -= len(name)+1
+			if stat.S_IFMT(mode) == stat.S_IFDIR:
+				self._adj_nlink(-1)
+		db.call_rolledback(adj_size)
+
 
 		inum = yield db.Do("insert into inode (root,mode,uid,gid,atime,mtime,ctime,atime_ns,mtime_ns,ctime_ns,rdev,target,size,typ) values(${root},${mode},${uid},${gid},${now},${now},${now},${now_ns},${now_ns},${now_ns},${rdev},${target},${size},${typ})", root=self.fs.root_id,mode=mode, uid=ctx.uid,gid=ctx.gid, now=now,now_ns=now_ns,rdev=rdev,target=target,size=size,typ=mode_char[stat.S_IFMT(mode)])
 		yield db.Do("insert into tree (inode,parent,name) values(${inode},${par},${name})", inode=inum,par=self.inum,name=name)
@@ -695,14 +706,17 @@ class SqlInode(Inode):
 		if cnt == 0:
 			if not inode.defer_delete():
 				yield inode._remove(db)
+
+		self.mtime = nowtuple()
+		self._adj_nlink(-1)
+		self.size -= len(name)+1
+		if self.size < 0:
+			log.err("Size problem, inode %s"%(self,))
+			self.size = 0
 		def adj_size():
-			self.mtime = nowtuple()
-			if self.size > len(name):
-				self.size -= len(name)+1
-			else:
-				log.err("Size problem, inode %s"%(self,))
-				self.size = 0
-		db.call_committed(adj_size)
+			self._adj_nlink(1)
+			self.size += len(name)+1
+		db.call_rolledback(adj_size)
 		returnValue( None )
 
 	def rmdir(self, name, ctx=None):
@@ -715,28 +729,22 @@ class SqlInode(Inode):
 			if cnt:
 				returnValue( IOError(errno.ENOTEMPTY) )
 
-			def adj_nlink():
-				if self._nlink is not None:
-					self._nlink.addCallback(lambda n: n-1)
-			db.call_committed(adj_nlink)
+			self._adj_nlink(-1)
+			db.call_rolledback(self._adj_nlink,1)
 			db.call_committed(self.fs.rooter.d_dir,-1)
 			yield inode._remove(db)
 		return self.fs.db(do_rmdir, DB_RETRIES)
 
-	@inlineCallbacks
 	def symlink(self, name, target, ctx=None):
 		if len(target) > self.fs.info.targetlen:
-			returnValue( IOError(errno.EDIR,"Cannot link a directory") )
-		inode = yield self.fs.db(lambda db: self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,target=target), DB_RETRIES)
-		returnValue( inode )
+			return IOError(errno.ENAMETOOLONG,"target entry too long")
+		return self.fs.db(lambda db: self._new_inode(db,name,stat.S_IFLNK|(0o755) ,ctx,target=target), DB_RETRIES)
 
 	def link(self, oldnode,target, ctx=None):
-		@inlineCallbacks
 		def do_link(db):
 			if stat.S_ISDIR(oldnode.mode):
-				returnValue( IOError(errno.ENAMETOOLONG,"target entry too long") )
-			res = yield self._link(oldnode,target, ctx=ctx,db=db)
-			returnValue( res )
+				return IOError(errno.EDIR,"Cannot link a directory")
+			return self._link(oldnode,target, ctx=ctx,db=db)
 		return self.fs.db(do_link, DB_RETRIES)
 
 	@inlineCallbacks
@@ -746,7 +754,14 @@ class SqlInode(Inode):
 		except Exception:
 			returnValue( IOError(errno.EEXIST, "%d:%s" % (self.inum,target)) )
 		self.mtime = nowtuple()
+
 		self.size += len(target)+1
+		self._adj_nlink(1)
+		def adj_size():
+			self.size -= len(target)+1
+			self._adj_nlink(-1)
+		db.call_rolledback(adj_size)
+
 		returnValue( oldnode ) # that's what's been linked, i.e. link count +=1
 			
 
