@@ -461,6 +461,11 @@ class SqlInode(Inode):
 #		'inuse',         # open files on this inode? <0:delete after close
 #		'write_timer',   # attribute write timer
 #		'no_attrs',      # set of attributes which don't exist
+#		'_save_timer',   # delayed inode saving
+#		'_saving',       # DB object currently writing
+#		'_saveq',        # delayed save
+#		'no_attrs',      # cache for empty extended attributes
+#		'load_lock',     # deferred queue for loading from database
 #		]
 
 	@inlineCallbacks
@@ -713,6 +718,8 @@ class SqlInode(Inode):
 
 	@inlineCallbacks
 	def _remove(self,db):
+		yield self._save(db) # may not be necessary; this clears the save timer
+
 		entries = []
 		def app(parent,name):
 			entries.append((parent,name))
@@ -917,6 +924,7 @@ class SqlInode(Inode):
 		self._saving = None
 		self._saveq = []
 		self.no_attrs = set()
+		self._save_timer = None
 		_InodeList.append(self)
 		# defer anything we only need when loaded to after _load is called
 
@@ -992,7 +1000,7 @@ class SqlInode(Inode):
 			self.fs.ichanger.note(self)
 
 	# We can't use a DeferredLock here because the "done" callback will run at the end of the transaction,
-	# but we might still need to re-enter the thing within the same transaction
+	# but we might still need to re-enter the thing within the same transaction.
 	def _save_done(self,db):
 		if self._saving != db:
 			trace('fs',"%s: save unlock error: %s %s",self,self._saving,db)
@@ -1019,6 +1027,9 @@ class SqlInode(Inode):
 	def _save(self, db, new_seq=None):
 		"""Save this inode's attributes"""
 		if not self.inum: return
+		if self._save_timer:
+			self._save_timer.cancel()
+			self._save_timer = None
 		ch = None
 
 		if not self.updated and not self.changes:
@@ -1254,14 +1265,17 @@ class SqlFile(File):
 		self.writes += 1
 		returnValue( len(buf) )
 
-	@inlineCallbacks
+	def delayed_save(self):
+		self._save_timer = None
+		d = self.node.fs.db(self.node._save, DB_RETRIES)
+		d.addErrback(lambda r: log.err(r,"delayed save"))
+
 	def release(self, ctx=None):
 		"""The last process closes the file."""
-		yield self.node.fs.db(self.node._save, DB_RETRIES)
-		yield self.node.clr_inuse()
-		if self.writes:
-			self.node.fs.record.finish_write(self.node)
-		returnValue( None )
+		d = self.node.clr_inuse()
+		if not self._save_timer:
+			self._save_timer = reactor.callLater(1, self.delayed_save)
+		return d
 
 	def flush(self,flags, ctx=None):
 		"""One process closed the file"""
@@ -1353,10 +1367,8 @@ class SqlDir(Dir):
 			yield db.DoSelect("select tree.name, inode.mode, inode.id, inode.id+2 from tree,inode where tree.parent=${par} and tree.inode=inode.id and tree.name != '' and inode.id > ${offset} order by inode", par=self.node.inum,offset=offset-2, _empty=True,_store=True, _callback=_callback)
 		returnValue( None )
 
-	@inlineCallbacks
 	def release(self, ctx=None):
-		yield self.node.clr_inuse()
-		returnValue( None )
+		return self.node.clr_inuse()
 
 	def sync(self, ctx=None):
 		log_call()

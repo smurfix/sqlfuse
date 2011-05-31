@@ -322,7 +322,7 @@ class Recorder(BackgroundJob):
 		self.trigger()
 
 	def finish_write(self,inode):
-		"""Record finished changing data, i.e. close-file"""
+		"""Record finished changing data, i.e. close-file. Obsolete."""
 		trace('eventrecord',"finish inode %d",inode.inum)
 		self.data.append(('f',inode,None))
 		self.trigger()

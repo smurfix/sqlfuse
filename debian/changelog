@@ -1,3 +1,10 @@
+python-sqlfuse (0.6.9-1) unstable; urgency=low
+
+  * Don't save inode data immediately after closing.
+    (NFS opens/closes around every file access!)
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Tue, 31 May 2011 11:38:34 +0200
+
 python-sqlfuse (0.6.8-1) unstable; urgency=low
 
   * Add code to create TODO records retroactively (for delayed file copying).
