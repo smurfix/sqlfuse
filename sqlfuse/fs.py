@@ -497,7 +497,6 @@ class SqlInode(Inode):
 		self._nlink_drop = None
 		self._nlink.addErrback(log.err,"no_nlink_end")
 		self._nlink = None
-		print >>sys.stderr,"_NLINK"
 
 	def _adj_nlink(self,x):
 		if self._nlink is not None:
@@ -544,7 +543,6 @@ class SqlInode(Inode):
 
 		d = Deferred()
 		def cpy(r):
-			print >>sys.stderr,"NLINK",r
 			d.callback(r)
 			return r
 		self._nlink.addCallback(cpy)
