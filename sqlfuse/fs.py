@@ -1193,7 +1193,7 @@ class SqlInode(Inode):
 					for k,v in updated:
 						if k not in self.updated:
 							self.updated[k]=v
-				db.call_rolledback(re_upd)
+				db.call_rolledback(re_upd,self)
 
 			if ch:
 				db.call_committed(self.fs.record.change,self,ch)

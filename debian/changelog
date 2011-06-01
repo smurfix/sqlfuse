@@ -1,3 +1,9 @@
+python-sqlfuse (0.6.10-1) unstable; urgency=low
+
+  * Missing argument to callback
+
+ -- Matthias Urlichs <smurf@smurf.noris.de>  Wed, 01 Jun 2011 14:06:00 +0200
+
 python-sqlfuse (0.6.9-1) unstable; urgency=low
 
   * NFS opens/closes around every file access!
